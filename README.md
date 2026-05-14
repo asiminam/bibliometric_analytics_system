@@ -399,26 +399,284 @@ Foreign-key consistency checks:
 
 ---
 
-## 11. Suggested project structure
+
+## 11. Phase 2 — Application Prototype
+
+Η Φάση ΙΙ υλοποιεί τον πρώτο λειτουργικό κορμό της εφαρμογής. Η εφαρμογή είναι ένα **Java Swing desktop dashboard** που συνδέεται απευθείας με τη MySQL βάση `bookdata_4991` και εκτελεί δυναμικά SQL queries για reports, πίνακες και γραφήματα.
+
+Το βασικό αρχείο της εφαρμογής είναι:
+
+```text
+Dashboard.java
+```
+
+Η εφαρμογή χρησιμοποιεί MySQL Connector/J:
+
+```text
+lib/mysql-connector-j-9.7.0.jar
+```
+
+---
+
+### 11.1 Phase 2 functionality
+
+Το dashboard περιλαμβάνει τα παρακάτω tabs:
+
+| Tab | Περιγραφή |
+|---|---|
+| `Database Summary` | Εμφανίζει βασικά row counts για όλους τους κύριους πίνακες |
+| `Conference Yearly Stats` | Εμφανίζει άρθρα ανά χρονιά για επιλεγμένο συνέδριο |
+| `Journal Yearly Stats` | Εμφανίζει άρθρα ανά χρονιά για επιλεγμένο περιοδικό |
+| `Author Search` | Αναζήτηση συγγραφέων και πλήθος conference/journal articles |
+| `Year Profile` | Προφίλ χρονιάς με conference articles, journal articles, distinct venues και distinct authors |
+| `Publication Details` | Πίνακας δημοσιεύσεων για συγκεκριμένη χρονιά με φίλτρο σε τίτλο ή venue |
+| `Venue Profile` | Προφίλ συνεδρίου ή περιοδικού με συνολικά στατιστικά και yearly stats |
+| `Author Profile` | Προφίλ συγγραφέα με πρώτη/τελευταία χρονιά, σύνολο άρθρων και yearly stats |
+| `Top Analytics` | BI-style rankings: top conferences, top journals, top authors και top years |
+
+Με αυτόν τον τρόπο η εφαρμογή καλύπτει τις βασικές οντότητες που ζητούνται από την εργασία:
+
+```text
+Συνέδρια / Περιοδικά
+Χρονιές
+Συγγραφείς
+Δημοσιεύσεις
+Top analytics / BI reports
+```
+
+---
+
+### 11.2 Charts
+
+Η εφαρμογή έχει δύο custom Swing chart components:
+
+```text
+SimpleBarChart
+SimpleLineChart
+```
+
+Τα yearly/trend tabs εμφανίζουν **και bar chart και line chart**. Το bar chart βοηθά στη σύγκριση των τιμών ανά χρονιά, ενώ το line chart δείχνει καλύτερα την εξέλιξη στον χρόνο.
+
+| Feature | Chart type |
+|---|---|
+| Conference yearly stats | Bar chart + Line chart |
+| Journal yearly stats | Bar chart + Line chart |
+| Venue yearly stats | Bar chart + Line chart |
+| Author yearly stats | Bar chart + Line chart |
+| Year profile summary | Bar chart |
+| Top analytics rankings | Bar chart |
+
+---
+
+### 11.3 Phase 2 architecture
+
+```mermaid
+flowchart TD
+    DB[(MySQL database<br/>bookdata_4991)] --> JDBC[MySQL Connector/J]
+    JDBC --> APP[Dashboard.java<br/>Java Swing Application]
+
+    APP --> Q1[Database Summary Queries]
+    APP --> Q2[Conference / Journal Yearly Queries]
+    APP --> Q3[Author Queries]
+    APP --> Q4[Year Profile Queries]
+    APP --> Q5[Publication Details Queries]
+    APP --> Q6[Venue Profile Queries]
+    APP --> Q7[Top Analytics Queries]
+
+    Q1 --> UI[JTabbedPane UI]
+    Q2 --> UI
+    Q3 --> UI
+    Q4 --> UI
+    Q5 --> UI
+    Q6 --> UI
+    Q7 --> UI
+
+    UI --> T[JTable Results]
+    UI --> B[SimpleBarChart]
+    UI --> L[SimpleLineChart]
+```
+
+---
+
+### 11.4 Run the dashboard
+
+Από το project folder, κάνουμε compile:
+
+```powershell
+javac -cp ".;lib\mysql-connector-j-9.7.0.jar" Dashboard.java
+```
+
+και μετά run:
+
+```powershell
+java -cp ".;lib\mysql-connector-j-9.7.0.jar" Dashboard
+```
+
+Η εφαρμογή ζητά το MySQL root password και μετά ανοίγει το dashboard.
+
+Προϋποθέσεις:
+
+```text
+1. Η MySQL πρέπει να τρέχει.
+2. Η βάση bookdata_4991 πρέπει να έχει φορτωθεί.
+3. Το mysql-connector-j-9.7.0.jar πρέπει να βρίσκεται στον φάκελο lib/.
+```
+
+---
+
+### 11.5 Main SQL/reporting logic
+
+Η εφαρμογή δεν φορτώνει όλα τα δεδομένα στη μνήμη της Java. Αντίθετα, εκτελεί SQL queries στη MySQL και εμφανίζει τα αποτελέσματα σε `JTable` και charts.
+
+Παραδείγματα reports που υποστηρίζονται:
+
+```text
+- COUNT rows ανά βασικό πίνακα
+- Articles per year για συνέδρια
+- Articles per year για περιοδικά
+- Author publication counts
+- Year profile statistics
+- Publication details με φίλτρο
+- Venue profile statistics
+- Top 20 conferences by articles
+- Top 20 journals by articles
+- Top 20 authors by articles
+- Top years by total publication count
+```
+
+Αυτό ακολουθεί τη σχεδιαστική επιλογή να γίνεται όσο γίνεται περισσότερη επεξεργασία μέσα στο DBMS, ειδικά επειδή η βάση περιέχει εκατομμύρια rows.
+
+---
+
+### 11.6 Phase 2 design trade-offs
+
+#### Java Swing desktop app vs web app
+
+**Decision:** Η εφαρμογή υλοποιήθηκε ως Java Swing desktop app.
+
+**Why:** Το project είχε ήδη Java ETL και MySQL backend, άρα το Swing επιτρέπει γρήγορη κατασκευή λειτουργικού prototype χωρίς επιπλέον web framework.
+
+**Trade-off:** Η λύση είναι απλή, άμεση και εύκολη να τρέξει τοπικά, αλλά είναι λιγότερο μοντέρνα από ένα web dashboard.
+
+---
+
+#### Direct SQL queries vs loading data into Java memory
+
+**Decision:** Τα reports εκτελούνται με SQL queries απευθείας στη MySQL.
+
+**Why:** Η βάση περιέχει εκατομμύρια εγγραφές, άρα τα aggregations πρέπει να γίνονται στο DBMS.
+
+**Trade-off:** Η εφαρμογή είναι πιο αποδοτική και αρχιτεκτονικά καθαρότερη, αλλά τα SQL queries είναι πιο σύνθετα.
+
+---
+
+#### JTable + custom charts vs external chart library
+
+**Decision:** Χρησιμοποιούνται `JTable`, `SimpleBarChart` και `SimpleLineChart`.
+
+**Why:** Έτσι η εφαρμογή παραμένει απλή και δεν χρειάζεται εξωτερικές βιβλιοθήκες για charts.
+
+**Trade-off:** Τα custom charts είναι πιο απλά οπτικά από βιβλιοθήκες όπως JFreeChart, αλλά είναι πλήρως ελεγχόμενα, εύκολα να εξηγηθούν στο demo και αρκετά για το Phase 2 prototype.
+
+---
+
+#### Bar chart + line chart for yearly data
+
+**Decision:** Τα yearly reports εμφανίζουν και bar chart και line chart.
+
+**Why:** Το bar chart βοηθά στη σύγκριση ανά χρονιά, ενώ το line chart δείχνει καλύτερα την τάση στον χρόνο.
+
+**Trade-off:** Το UI καταλαμβάνει περισσότερο χώρο, αλλά δίνει πιο πλήρη οπτική εικόνα.
+
+---
+
+#### One-file prototype vs multi-class architecture
+
+**Decision:** Το Phase 2 dashboard είναι συγκεντρωμένο κυρίως στο `Dashboard.java`.
+
+**Why:** Για prototype φάσης ΙΙ, είναι πιο εύκολο να αναπτυχθεί, να τρέξει και να γίνει demo.
+
+**Trade-off:** Η λύση είναι πιο απλή αλλά όχι ιδανικά modular. Σε επόμενη φάση, μπορεί να διαχωριστεί σε:
+
+```text
+DatabaseConnection.java
+QueryService.java
+DashboardFrame.java
+ChartPanel.java
+```
+
+---
+
+## 12. Large files and GitHub note
+
+Τα raw input datasets, τα generated `_Clean.csv` αρχεία και το database backup δεν γίνονται track στο GitHub, επειδή είναι μεγάλα generated/data files.
+
+Δεν ανεβαίνουν στο GitHub:
+
+```text
+input_article.csv
+input_inproceedings.csv
+*_Clean.csv
+Rejected_Rows.csv
+bookdata_4991_backup.sql
+```
+
+Ανεβαίνουν στο GitHub:
+
+```text
+ETL.java
+Dashboard.java
+bookdata_4991.sql
+README.md
+diagrams/
+DocumentationForETL/
+ProjectDescription-2025-2026.pdf
+```
+
+Η βάση μπορεί να αναπαραχθεί από την αρχή με:
+
+```powershell
+java ETL
+cmd /c """C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe"" --local-infile=1 -u root -p < bookdata_4991.sql"
+cmd /c """C:\Program Files\MySQL\MySQL Server 8.0\bin\mysqldump.exe"" -u root -p --databases bookdata_4991 > bookdata_4991_backup.sql"
+```
+
+---
+
+## 13. Suggested project structure
 
 ```text
 bibliometric_analytics_system/
 ├── ETL.java
+├── Dashboard.java
 ├── bookdata_4991.sql
-├── bookdata_4991_backup.sql
-├── input_inproceedings.csv
-├── input_article.csv
-├── Authors_Clean.csv
-├── Conferences_Clean.csv
-├── Journals_Clean.csv
-├── Conference_Articles_Clean.csv
-├── Journal_Articles_Clean.csv
-├── Conference_Article_Authors_Clean.csv
-├── Journal_Article_Authors_Clean.csv
-├── Rejected_Rows.csv
 ├── README.md
-└── diagrams/
-    ├── etl_pipeline_diagram.mmd
-    ├── etl_activity_diagram.mmd
-    └── schema_er_diagram.mmd
+├── .gitignore
+├── lib/
+│   └── mysql-connector-j-9.7.0.jar
+├── diagrams/
+│   ├── etl_pipeline_diagram.mmd
+│   ├── etl_activity_diagram.mmd
+│   ├── schema_er_diagram.mmd
+│   └── etl_pipeline_diagram.png
+├── DocumentationForETL/
+├── TemplateFinalReport/
+├── icore26_data/
+└── journal_ranking_data_raw/
+```
+
+Generated locally but not tracked in GitHub:
+
+```text
+input_inproceedings.csv
+input_article.csv
+Authors_Clean.csv
+Conferences_Clean.csv
+Journals_Clean.csv
+Conference_Articles_Clean.csv
+Journal_Articles_Clean.csv
+Conference_Article_Authors_Clean.csv
+Journal_Article_Authors_Clean.csv
+Rejected_Rows.csv
+bookdata_4991_backup.sql
 ```
