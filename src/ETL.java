@@ -1,3 +1,4 @@
+package src;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -29,50 +30,51 @@ import java.util.Set;
  * 4. It keeps the ETL repeatable: all ids are generated deterministically from
  *    the input processing order.
  * 5. It optionally enriches Conference and Journal lookup tables from ranking
- *    CSV files when such files are present next to the program.
+ *    CSV files when such files are present in the data/raw folder.
  *
- * Expected input files in the current working directory:
- * - input_inproceedings.csv
- * - input_article.csv
+ * Expected input files relative to the project root:
+ * - data/raw/input_inproceedings.csv
+ * - data/raw/input_article.csv
  *
  * Optional input files, if available as CSV:
- * - iCore26_KilledColumnsForLoading.csv
- * - journal_ranking_data_raw.csv
- * - journal_ranking_data_raw/journal_ranking_data_raw.csv
+ * - data/raw/iCore26_KilledColumnsForLoading.csv
+ * - data/raw/icore26_data/iCore26_KilledColumnsForLoading.csv
+ * - data/raw/journal_ranking_data_raw.csv
+ * - data/raw/journal_ranking_data_raw/journal_ranking_data_raw.csv
  *
  * Produced tab-delimited load files:
- * - Authors_Clean.csv
- * - Conferences_Clean.csv
- * - Journals_Clean.csv
- * - Conference_Articles_Clean.csv
- * - Journal_Articles_Clean.csv
- * - Conference_Article_Authors_Clean.csv
- * - Journal_Article_Authors_Clean.csv
- * - Rejected_Rows.csv
+ * - data/processed/Authors_Clean.csv
+ * - data/processed/Conferences_Clean.csv
+ * - data/processed/Journals_Clean.csv
+ * - data/processed/Conference_Articles_Clean.csv
+ * - data/processed/Journal_Articles_Clean.csv
+ * - data/processed/Conference_Article_Authors_Clean.csv
+ * - data/processed/Journal_Article_Authors_Clean.csv
+ * - data/rejected/Rejected_Rows.csv
  */
 public class ETL {
 
     /*
      * Default input names used when the program is started without command-line
      * arguments. A caller can still override them by passing:
-     *   java ETL <conference-input.csv> <journal-input.csv>
+     *   java src.ETL <conference-input.csv> <journal-input.csv>
      */
-    private static final String DEFAULT_CONFERENCE_INPUT = "input_inproceedings.csv";
-    private static final String DEFAULT_JOURNAL_INPUT = "input_article.csv";
+    private static final String DEFAULT_CONFERENCE_INPUT = "data/raw/input_inproceedings.csv";
+    private static final String DEFAULT_JOURNAL_INPUT = "data/raw/input_article.csv";
 
     /*
-     * Output file names. The files are written as tab-delimited text because
+     * Output file paths. The files are written as tab-delimited text because
      * tabs are less likely to appear inside publication titles than commas or
      * semicolons. Null database values are written later as \N.
      */
-    private static final String AUTHORS_OUT = "Authors_Clean.csv";
-    private static final String CONFERENCES_OUT = "Conferences_Clean.csv";
-    private static final String JOURNALS_OUT = "Journals_Clean.csv";
-    private static final String CONFERENCE_ARTICLES_OUT = "Conference_Articles_Clean.csv";
-    private static final String JOURNAL_ARTICLES_OUT = "Journal_Articles_Clean.csv";
-    private static final String CONFERENCE_ARTICLE_AUTHORS_OUT = "Conference_Article_Authors_Clean.csv";
-    private static final String JOURNAL_ARTICLE_AUTHORS_OUT = "Journal_Article_Authors_Clean.csv";
-    private static final String REJECTED_ROWS_OUT = "Rejected_Rows.csv";
+    private static final String AUTHORS_OUT = "data/processed/Authors_Clean.csv";
+    private static final String CONFERENCES_OUT = "data/processed/Conferences_Clean.csv";
+    private static final String JOURNALS_OUT = "data/processed/Journals_Clean.csv";
+    private static final String CONFERENCE_ARTICLES_OUT = "data/processed/Conference_Articles_Clean.csv";
+    private static final String JOURNAL_ARTICLES_OUT = "data/processed/Journal_Articles_Clean.csv";
+    private static final String CONFERENCE_ARTICLE_AUTHORS_OUT = "data/processed/Conference_Article_Authors_Clean.csv";
+    private static final String JOURNAL_ARTICLE_AUTHORS_OUT = "data/processed/Journal_Article_Authors_Clean.csv";
+    private static final String REJECTED_ROWS_OUT = "data/rejected/Rejected_Rows.csv";
 
     /*
      * Author lookup state.
@@ -645,11 +647,14 @@ public class ETL {
      */
     private void loadOptionalConferenceRankings() {
         List<String> possibleFiles = Arrays.asList(
-            "iCore26_KilledColumnsForLoading.csv",
-            "icore26_KilledColumnsForLoading.csv",
-            "iCore26.csv",
-            "icore26.csv",
-            "iCORE_raw.csv"
+            "data/raw/iCore26_KilledColumnsForLoading.csv",
+            "data/raw/icore26_data/iCore26_KilledColumnsForLoading.csv",
+            "data/raw/icore26_data/icore26_KilledColumnsForLoading.csv",
+            "data/raw/iCore26.csv",
+            "data/raw/icore26_data/iCore26.csv",
+            "data/raw/icore26_data/icore26.csv",
+            "data/raw/iCORE_raw.csv",
+            "data/raw/icore26_data/iCORE_raw.csv"
         );
 
         for (String file : possibleFiles) {
@@ -669,9 +674,17 @@ public class ETL {
             }
         }
 
-        if (Files.exists(Paths.get("icoreCategories.xlsx"))) {
-            System.out.println("Found icoreCategories.xlsx, but this ETL uses only standard Java and reads CSV files. "
-                + "Export the Excel sheet as CSV if you want the conference ranking fields enriched automatically.");
+        List<String> excelFiles = Arrays.asList(
+            "data/raw/icoreCategories.xlsx",
+            "data/raw/icore26_data/icoreCategories.xlsx"
+        );
+
+        for (String excelFile : excelFiles) {
+            if (Files.exists(Paths.get(excelFile))) {
+                System.out.println("Found " + excelFile + ", but this ETL uses only standard Java and reads CSV files. "
+                    + "Export the Excel sheet as CSV if you want the conference ranking fields enriched automatically.");
+                return;
+            }
         }
     }
 
@@ -731,8 +744,8 @@ public class ETL {
      */
     private void loadOptionalJournalRankings() {
         List<String> possibleFiles = Arrays.asList(
-            "journal_ranking_data_raw.csv",
-            "journal_ranking_data_raw/journal_ranking_data_raw.csv"
+            "data/raw/journal_ranking_data_raw.csv",
+            "data/raw/journal_ranking_data_raw/journal_ranking_data_raw.csv"
         );
 
         for (String file : possibleFiles) {
@@ -923,10 +936,16 @@ public class ETL {
     }
 
     /**
-     * Opens a UTF-8 writer for an output file in the current working directory.
+     * Opens a UTF-8 writer for an output file and creates parent folders when needed.
      */
     private static BufferedWriter newUtf8Writer(String outputFile) throws IOException {
-        return Files.newBufferedWriter(Paths.get(outputFile), StandardCharsets.UTF_8);
+        Path outputPath = Paths.get(outputFile);
+
+        if (outputPath.getParent() != null) {
+            Files.createDirectories(outputPath.getParent());
+        }
+
+        return Files.newBufferedWriter(outputPath, StandardCharsets.UTF_8);
     }
 
     /**
