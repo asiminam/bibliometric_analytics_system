@@ -1,0 +1,23 @@
+# Generated ETL output files
+*_Clean.csv
+Rejected_Rows.csv
+
+# Large raw input datasets
+input_article.csv
+input_inproceedings.csv
+
+# Database backups / dumps
+bookdata_4991_backup.sql
+*.sql.gz
+*.dump
+
+# Optional large data folders
+dblp_dataset/
+journal_ranking_data_raw/
+icore26_data/
+
+# IDE / system files
+.vscode/
+*.class
+.DS_Store
+Thumbs.db
