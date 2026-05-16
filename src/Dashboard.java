@@ -759,7 +759,7 @@ private JPanel createAuthorProfilePanel() {
     // create the author search area
     JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
 
-    JTextField searchField = new JTextField("John R. Smith", 25);
+    JTextField searchField = new JTextField("Leonidas Palios", 25);
     JButton searchButton = new JButton("Load Author Profile");
 
     topPanel.add(new JLabel("Author name:"));
