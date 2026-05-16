@@ -1,682 +1,437 @@
-# Bibliometric Analytics System — ETL & Design Trade-offs
+# Bibliometric Analytics System
 
-## 1. Σκοπός της Φάσης Ι
+A Java and MySQL desktop application for cleaning, integrating, querying, and visualizing bibliometric publication data.
 
-Η Φάση Ι υλοποιεί την ενοποίηση των βιβλιογραφικών δεδομένων σε μία ενιαία, καθαρή και επερωτήσιμη βάση δεδομένων MySQL.
+The system processes raw conference and journal publication datasets, transforms them into clean relational tables, loads them into a MySQL database, and provides an interactive Java Swing dashboard for exploring publication trends, author activity, venue profiles, yearly analytics, and top rankings.
 
-Ο βασικός στόχος είναι τα raw αρχεία να μετασχηματιστούν σε:
+## Project Overview
 
-- lookup/reference tables με σταθερά IDs,
-- factual tables για άρθρα συνεδρίων και περιοδικών,
-- N:M relationship tables για τη σχέση άρθρων–συγγραφέων,
-- primary keys και foreign keys,
-- επαναλήψιμα ETL και loading scripts,
-- backup της φορτωμένης βάσης.
+This project was developed for a database systems course assignment focused on data integration and data visualization.
 
----
+The purpose of the system is to support an analyst who wants to explore bibliometric data through a clean relational database and an interactive dashboard. The application combines an ETL process, a MySQL back-end, SQL-based business logic, and a Java Swing graphical interface.
 
-## 2. Input δεδομένα
+The main goals of the project are:
 
-| Αρχείο / Φάκελος | Περιγραφή |
-|---|---|
-| `input_inproceedings.csv` | Raw DBLP records για άρθρα συνεδρίων |
-| `input_article.csv` | Raw DBLP records για άρθρα περιοδικών |
-| `iCore26_KilledColumnsForLoading.csv` | Ranking / metadata για συνέδρια |
-| `journal_ranking_data_raw/journal_ranking_data_raw.csv` | Ranking / metadata για περιοδικά |
-| `bestSubjectArea.csv` | Συμπληρωματική κατηγοριοποίηση περιοδικών, όπου χρησιμοποιείται |
+- To clean and integrate bibliographic data from different sources
+- To create a relational database that can be queried efficiently
+- To provide ready-made analytical reports
+- To visualize publication trends and patterns
+- To allow users to explore conferences, journals, authors, years, and publications interactively
 
-Στα DBLP αρχεία, οι συγγραφείς βρίσκονται σε ένα πεδίο χωρισμένοι με `|`, άρα απαιτείται μετασχηματισμός σε κανονικοποιημένη N:M σχέση.
+## Technologies Used
 
----
+- Java
+- Java Swing
+- MySQL
+- JDBC
+- SQL
+- CSV / TSV file processing
 
-## 3. ETL Pipeline
+## Main Components
 
-```mermaid
-flowchart TD
-    A[Raw conference articles<br/>input_inproceedings.csv] --> E[ETL.java]
-    B[Raw journal articles<br/>input_article.csv] --> E
-    C[Conference rankings<br/>iCore26] --> E
-    D[Journal rankings<br/>journal_ranking_data_raw] --> E
+### ETL Process
 
-    E --> F[Clean lookup files]
-    E --> G[Clean factual files]
-    E --> H[Clean relationship files]
-    E --> I[Rejected_Rows.csv]
+The ETL process is implemented in `ETL.java`.
 
-    F --> F1[Authors_Clean.csv]
-    F --> F2[Conferences_Clean.csv]
-    F --> F3[Journals_Clean.csv]
+This part of the system reads the raw input files, cleans the data, creates IDs, removes duplicates, and writes the final processed files that can be loaded into MySQL.
 
-    G --> G1[Conference_Articles_Clean.csv]
-    G --> G2[Journal_Articles_Clean.csv]
+The ETL process handles:
 
-    H --> H1[Conference_Article_Authors_Clean.csv]
-    H --> H2[Journal_Article_Authors_Clean.csv]
+- Conference article data
+- Journal article data
+- Author extraction
+- Conference extraction
+- Journal extraction
+- Article-author relationships
+- Optional conference ranking data
+- Optional journal ranking data
+- Duplicate article detection
+- Duplicate article-author relation detection
+- Missing or invalid row filtering
+- Text cleaning and normalization
 
-    F1 --> L[bookdata_4991.sql]
-    F2 --> L
-    F3 --> L
-    G1 --> L
-    G2 --> L
-    H1 --> L
-    H2 --> L
-
-    L --> M[(MySQL database<br/>bookdata_4991)]
-    M --> N[Views / reporting queries]
-    M --> O[bookdata_4991_backup.sql]
-```
-
----
-
-## 4. Logical ETL Activity Diagram
-
-```mermaid
-flowchart LR
-    S1[(input_inproceedings.csv)] --> D1[Detect delimiter<br/>Read headers]
-    S2[(input_article.csv)] --> D2[Detect delimiter<br/>Read headers]
-    R1[(iCore26 ranking data)] --> RC[Load conference lookup metadata]
-    R2[(journal ranking data)] --> RJ[Load journal lookup metadata]
-
-    D1 --> VC[Validate conference article row]
-    D2 --> VJ[Validate journal article row]
-
-    VC -->|invalid| REJ[Rejected_Rows.csv]
-    VJ -->|invalid| REJ
-
-    VC --> AC[Get/Create Conference]
-    VJ --> AJ[Get/Create Journal]
-
-    AC --> IC[Generate internal conference article_id]
-    AJ --> IJ[Generate internal journal article_id]
-
-    IC --> SC[Write Conference_Articles_Clean.csv]
-    IJ --> SJ[Write Journal_Articles_Clean.csv]
-
-    IC --> SPLIT1[Split authors by pipe symbol]
-    IJ --> SPLIT2[Split authors by pipe symbol]
-
-    SPLIT1 --> NA[Normalize author name]
-    SPLIT2 --> NA
-
-    NA --> AUTH[Get/Create Author]
-    AUTH --> REL1[Write article-author relation]
-
-    REL1 --> CAA[Conference_Article_Authors_Clean.csv]
-    REL1 --> JAA[Journal_Article_Authors_Clean.csv]
-
-    RC --> CL[Conferences_Clean.csv]
-    RJ --> JL[Journals_Clean.csv]
-    AUTH --> AL[Authors_Clean.csv]
-
-    AL --> SQL[LOAD DATA LOCAL INFILE]
-    CL --> SQL
-    JL --> SQL
-    SC --> SQL
-    SJ --> SQL
-    CAA --> SQL
-    JAA --> SQL
-
-    SQL --> DB[(bookdata_4991)]
-```
-
----
-
-## 5. Database Schema Overview
-
-```mermaid
-erDiagram
-    Authors {
-        int author_id PK
-        varchar author_name
-    }
-
-    Conferences {
-        int conf_id PK
-        varchar acronym
-        varchar title
-        varchar rank_category
-        int primary_for
-    }
-
-    Journals {
-        int journal_id PK
-        varchar title
-        varchar country
-        decimal sjr_index
-        varchar best_quartile
-        int total_docs_3y
-        int total_refs
-        decimal cites_per_doc_2y
-    }
-
-    Conference_Articles {
-        int article_id PK
-        varchar original_dblp_id
-        varchar title
-        int year
-        varchar pages
-        int conf_id FK
-    }
-
-    Journal_Articles {
-        int article_id PK
-        varchar original_dblp_id
-        varchar title
-        int year
-        varchar volume
-        varchar pages
-        int journal_id FK
-    }
-
-    Conference_Article_Authors {
-        int article_id FK
-        int author_id FK
-    }
-
-    Journal_Article_Authors {
-        int article_id FK
-        int author_id FK
-    }
-
-    Conferences ||--o{ Conference_Articles : has
-    Journals ||--o{ Journal_Articles : has
-    Conference_Articles ||--o{ Conference_Article_Authors : written_by
-    Journal_Articles ||--o{ Journal_Article_Authors : written_by
-    Authors ||--o{ Conference_Article_Authors : writes
-    Authors ||--o{ Journal_Article_Authors : writes
-```
-
----
-
-## 6. Transformation Rules
-
-### 6.1 Συγγραφείς
-
-Οι συγγραφείς στο raw DBLP input βρίσκονται σε ένα πεδίο:
+The default raw input files are:
 
 ```text
-Author A|Author B|Author C
+ data/raw/input_inproceedings.csv
+ data/raw/input_article.csv
 ```
 
-Το ETL:
+The processed output files are:
 
-1. χωρίζει το πεδίο με βάση το `|`,
-2. καθαρίζει κενά και ειδικούς χαρακτήρες,
-3. κανονικοποιεί το όνομα για σύγκριση,
-4. δημιουργεί μοναδικό `author_id`,
-5. γράφει τις σχέσεις άρθρου–συγγραφέα στα junction files.
+```text
+ data/processed/Authors_Clean.csv
+ data/processed/Conferences_Clean.csv
+ data/processed/Journals_Clean.csv
+ data/processed/Conference_Articles_Clean.csv
+ data/processed/Journal_Articles_Clean.csv
+ data/processed/Conference_Article_Authors_Clean.csv
+ data/processed/Journal_Article_Authors_Clean.csv
+```
 
-Η κανονικοποίηση περιλαμβάνει lowercase, αφαίρεση accents, αντικατάσταση ειδικών χαρακτήρων και collapse πολλαπλών κενών.
+### Database
 
----
+The project uses a MySQL database named:
 
-### 6.2 Άρθρα συνεδρίων και περιοδικών
+```text
+bookdata_4991
+```
 
-Τα άρθρα συνεδρίων και περιοδικών είναι παρόμοια αλλά όχι ίδια. Για αυτό κρατήθηκαν σε ξεχωριστά factual tables:
+The database stores the cleaned bibliometric data in relational tables.
 
+Main tables include:
+
+- `Authors`
+- `Conferences`
+- `Journals`
 - `Conference_Articles`
 - `Journal_Articles`
+- `Conference_Article_Authors`
+- `Journal_Article_Authors`
 
-Κάθε άρθρο έχει εσωτερικό numeric `article_id`, `original_dblp_id` για traceability, τίτλο, χρονιά, metadata και foreign key προς `Conferences` ή `Journals`.
+The database works as the back-end of the dashboard. The dashboard uses SQL queries through JDBC to calculate statistics and display results.
 
----
+### Dashboard Application
 
-### 6.3 Rejected rows
+The dashboard is implemented in `Dashboard.java`.
 
-Προβληματικές εγγραφές δεν φορτώνονται σιωπηλά στη βάση. Γράφονται στο:
+It is a Java Swing desktop application that connects to the MySQL database and provides interactive tabs for exploring the data.
+
+When the application starts, it asks the user to enter the MySQL root password. Then it opens the main dashboard window.
+
+The dashboard includes the following tabs:
+
+#### Database Summary
+
+Shows the number of rows in the main database tables.
+
+#### Conference Yearly Stats
+
+Allows the user to search for a conference by acronym or title and view yearly article counts.
+
+Includes:
+
+- Results table
+- Bar chart
+- Line chart
+- Scatter plot
+
+#### Journal Yearly Stats
+
+Allows the user to search for a journal by title and view yearly article counts.
+
+Includes:
+
+- Results table
+- Bar chart
+- Line chart
+- Scatter plot
+
+#### Author Search
+
+Allows the user to search for authors by name.
+
+Shows:
+
+- Author ID
+- Author name
+- Number of conference articles
+- Number of journal articles
+- Total number of articles
+
+#### Year Profile
+
+Allows the user to enter a year and view a summary of publication activity for that year.
+
+Shows metrics such as:
+
+- Conference articles
+- Journal articles
+- Distinct conferences
+- Distinct journals
+- Distinct authors
+
+#### Publication Details
+
+Allows the user to search publications by year and filter by title or venue.
+
+Shows both conference and journal publications in one table.
+
+#### Venue Profile
+
+Allows the user to view a detailed profile for a conference or journal.
+
+For conferences, it can show:
+
+- Conference ID
+- Acronym
+- Title
+- Ranking category
+- Primary field of research
+- First publication year
+- Last publication year
+- Total articles
+- Total author occurrences
+- Distinct authors
+- Average authors per article
+- Yearly activity
+
+For journals, it can show:
+
+- Journal ID
+- Title
+- Country
+- SJR index
+- Best quartile
+- Total documents
+- Total references
+- Cites per document
+- First publication year
+- Last publication year
+- Total articles
+- Distinct authors
+- Average authors per article
+- Yearly activity
+
+#### Author Profile
+
+Allows the user to search for an author and view publication statistics.
+
+Shows author activity over time using tables and charts.
+
+#### Top Analytics
+
+Shows top-ranked results based on publication counts.
+
+Examples include:
+
+- Top conferences by number of articles
+- Top journals by number of articles
+- Top authors by number of articles
+- Top years by publication activity
+
+## Visualizations
+
+The dashboard supports several types of visualizations:
+
+- Bar charts
+- Line charts
+- Scatter plots
+- SQL result tables
+
+These visualizations help the user identify trends, compare publication activity, and understand patterns in the data.
+
+Examples of supported analysis include:
+
+- Articles per conference per year
+- Articles per journal per year
+- Articles per author per year
+- Publication activity in a selected year
+- Venue activity over time
+- Top authors, conferences, journals, and years
+
+## Project Structure
 
 ```text
-Rejected_Rows.csv
-```
-
-Παραδείγματα λόγων απόρριψης:
-
-- missing original DBLP id,
-- missing title,
-- invalid year,
-- missing conference/booktitle,
-- missing journal title.
-
----
-
-## 7. Loading Process
-
-Το SQL script που δημιουργεί και φορτώνει τη βάση είναι:
-
-```text
-bookdata_4991.sql
-```
-
-Η σειρά φόρτωσης είναι σημαντική λόγω foreign keys:
-
-1. `Authors`
-2. `Conferences`
-3. `Journals`
-4. `Conference_Articles`
-5. `Journal_Articles`
-6. `Conference_Article_Authors`
-7. `Journal_Article_Authors`
-
-Το script χρησιμοποιεί:
-
-```sql
-LOAD DATA LOCAL INFILE './file.csv'
-```
-
-ώστε να φορτώνει αρχεία απευθείας από το project folder.
-
----
-
-## 8. How to reproduce
-
-### 8.1 Run ETL
-
-Από το project folder:
-
-```powershell
-java ETL
-```
-
-Το ETL παράγει:
-
-```text
-Authors_Clean.csv
-Conferences_Clean.csv
-Journals_Clean.csv
-Conference_Articles_Clean.csv
-Journal_Articles_Clean.csv
-Conference_Article_Authors_Clean.csv
-Journal_Article_Authors_Clean.csv
-Rejected_Rows.csv
-```
-
-### 8.2 Load database
-
-```powershell
-cmd /c """C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe"" --local-infile=1 -u root -p < bookdata_4991.sql"
-```
-
-### 8.3 Backup database
-
-```powershell
-cmd /c """C:\Program Files\MySQL\MySQL Server 8.0\bin\mysqldump.exe"" -u root -p --databases bookdata_4991 > bookdata_4991_backup.sql"
-```
-
----
-
-## 9. Loaded Data Summary
-
-Μετά την τελευταία επιτυχημένη φόρτωση:
-
-| Table | Rows loaded |
-|---|---:|
-| `Authors` | 1,394,699 |
-| `Conferences` | 6,601 |
-| `Journals` | 10,305 |
-| `Conference_Articles` | 1,413,090 |
-| `Journal_Articles` | 1,112,661 |
-| `Conference_Article_Authors` | 4,122,002 |
-| `Journal_Article_Authors` | 2,928,502 |
-
-Foreign-key consistency checks:
-
-| Check | Result |
-|---|---:|
-| `orphan_conference_article_author_rows` | 0 |
-| `orphan_journal_article_author_rows` | 0 |
-
----
-
-## 10. Design Trade-offs
-
-### 10.1 Separate article tables vs one unified table
-
-**Decision:** Χρησιμοποιούνται δύο factual tables: `Conference_Articles` και `Journal_Articles`.
-
-**Why:** Τα conference και journal articles έχουν παρόμοια αλλά όχι ίδια δομή.
-
-**Trade-off:** Το schema είναι καθαρότερο και έχει λιγότερα nullable πεδία, αλλά queries που αφορούν όλες τις δημοσιεύσεις χρειάζονται `UNION` ή unified view.
-
----
-
-### 10.2 Internal numeric IDs vs source IDs
-
-**Decision:** Χρησιμοποιούνται εσωτερικά numeric IDs (`article_id`, `author_id`, `conf_id`, `journal_id`).
-
-**Why:** Τα numeric keys είναι πιο αποδοτικά για joins, indexes και foreign keys.
-
-**Trade-off:** Καλύτερη απόδοση και σταθερό relational schema, αλλά το ETL πρέπει να διατηρεί mapping από source IDs σε internal IDs. Το αρχικό DBLP id κρατιέται ως `original_dblp_id`.
-
----
-
-### 10.3 Normalize authors vs preserve raw author strings
-
-**Decision:** Οι συγγραφείς κανονικοποιούνται και αποθηκεύονται σε ξεχωριστό lookup table.
-
-**Why:** Το raw format με `Author A|Author B|Author C` δεν επιτρέπει σωστά author profiles, distinct counts ή N:M joins.
-
-**Trade-off:** Υποστηρίζονται σωστά author queries, αλλά υπάρχει πιθανότητα δύο διαφορετικά ονόματα να συγχωνευτούν αν η normalized μορφή τους συμπίπτει. Η εργασία θεωρεί ότι δεν χειριζόμαστε συνωνυμίες/ομωνυμίες συγγραφέων.
-
----
-
-### 10.4 CSV intermediate files vs direct DB inserts
-
-**Decision:** Το `ETL.java` παράγει intermediate clean CSV files και μετά το MySQL script τα φορτώνει με `LOAD DATA`.
-
-**Why:** Είναι απλό, διαφανές και επαναλήψιμο για το scope της εργασίας.
-
-**Trade-off:** Τα intermediate files μπορούν να ελεγχθούν εύκολα και φορτώνονται γρήγορα, αλλά απαιτούν επιπλέον χώρο και δύο βήματα εκτέλεσης.
-
----
-
-### 10.5 Reject invalid rows vs force loading
-
-**Decision:** Οι invalid rows γράφονται σε `Rejected_Rows.csv`.
-
-**Why:** Είναι καλύτερο να απομονώνονται τα προβληματικά records παρά να χαλάνε την ποιότητα της βάσης.
-
-**Trade-off:** Προστατεύεται η consistency της βάσης, αλλά κάποια source records δεν φορτώνονται μέχρι να διορθωθούν.
-
----
-
-### 10.6 More work in DBMS vs more work in Java
-
-**Decision:** Το ETL κάνει cleaning/loading preparation, αλλά τα reporting queries σχεδιάζονται ώστε να γίνονται με SQL views/direct queries.
-
-**Why:** Η εφαρμογή πρέπει να αξιοποιεί το DBMS για aggregation και filtering, όχι να φέρνει όλα τα δεδομένα στη μνήμη.
-
-**Trade-off:** Καλύτερη κλιμάκωση και πιο καθαρό backend, αλλά απαιτείται προσοχή σε SQL views, indexes και query optimization.
-
----
-
-### 10.7 Simple Java ETL vs dedicated ETL tool
-
-**Decision:** Το ETL υλοποιήθηκε με Java script αντί για Pentaho/Kettle, KNIME ή άλλο ETL εργαλείο.
-
-**Why:** Για το πλαίσιο της εργασίας, ένα script είναι πιο άμεσο, εύκολο να τρέξει και εύκολο να μπει στο GitHub.
-
-**Trade-off:** Λιγότερες εξαρτήσεις και απλή αναπαραγωγή, αλλά λιγότερο οπτικό workflow και λιγότερα built-in ETL features. Το README καλύπτει το workflow με Mermaid diagrams.
-
----
-
-
-## 11. Phase 2 — Application Prototype
-
-Η Φάση ΙΙ υλοποιεί τον πρώτο λειτουργικό κορμό της εφαρμογής. Η εφαρμογή είναι ένα **Java Swing desktop dashboard** που συνδέεται απευθείας με τη MySQL βάση `bookdata_4991` και εκτελεί δυναμικά SQL queries για reports, πίνακες και γραφήματα.
-
-Το βασικό αρχείο της εφαρμογής είναι:
-
-```text
-Dashboard.java
-```
-
-Η εφαρμογή χρησιμοποιεί MySQL Connector/J:
-
-```text
-lib/mysql-connector-j-9.7.0.jar
-```
-
----
-
-### 11.1 Phase 2 functionality
-
-Το dashboard περιλαμβάνει τα παρακάτω tabs:
-
-| Tab | Περιγραφή |
-|---|---|
-| `Database Summary` | Εμφανίζει βασικά row counts για όλους τους κύριους πίνακες |
-| `Conference Yearly Stats` | Εμφανίζει άρθρα ανά χρονιά για επιλεγμένο συνέδριο |
-| `Journal Yearly Stats` | Εμφανίζει άρθρα ανά χρονιά για επιλεγμένο περιοδικό |
-| `Author Search` | Αναζήτηση συγγραφέων και πλήθος conference/journal articles |
-| `Year Profile` | Προφίλ χρονιάς με conference articles, journal articles, distinct venues και distinct authors |
-| `Publication Details` | Πίνακας δημοσιεύσεων για συγκεκριμένη χρονιά με φίλτρο σε τίτλο ή venue |
-| `Venue Profile` | Προφίλ συνεδρίου ή περιοδικού με συνολικά στατιστικά και yearly stats |
-| `Author Profile` | Προφίλ συγγραφέα με πρώτη/τελευταία χρονιά, σύνολο άρθρων και yearly stats |
-| `Top Analytics` | BI-style rankings: top conferences, top journals, top authors και top years |
-
-Με αυτόν τον τρόπο η εφαρμογή καλύπτει τις βασικές οντότητες που ζητούνται από την εργασία:
-
-```text
-Συνέδρια / Περιοδικά
-Χρονιές
-Συγγραφείς
-Δημοσιεύσεις
-Top analytics / BI reports
-```
-
----
-
-### 11.2 Charts
-
-Η εφαρμογή έχει δύο custom Swing chart components:
-
-```text
-SimpleBarChart
-SimpleLineChart
-```
-
-Τα yearly/trend tabs εμφανίζουν **και bar chart και line chart**. Το bar chart βοηθά στη σύγκριση των τιμών ανά χρονιά, ενώ το line chart δείχνει καλύτερα την εξέλιξη στον χρόνο.
-
-| Feature | Chart type |
-|---|---|
-| Conference yearly stats | Bar chart + Line chart |
-| Journal yearly stats | Bar chart + Line chart |
-| Venue yearly stats | Bar chart + Line chart |
-| Author yearly stats | Bar chart + Line chart |
-| Year profile summary | Bar chart |
-| Top analytics rankings | Bar chart |
-
----
-
-### 11.3 Phase 2 architecture
-
-```mermaid
-flowchart TD
-    DB[(MySQL database<br/>bookdata_4991)] --> JDBC[MySQL Connector/J]
-    JDBC --> APP[Dashboard.java<br/>Java Swing Application]
-
-    APP --> Q1[Database Summary Queries]
-    APP --> Q2[Conference / Journal Yearly Queries]
-    APP --> Q3[Author Queries]
-    APP --> Q4[Year Profile Queries]
-    APP --> Q5[Publication Details Queries]
-    APP --> Q6[Venue Profile Queries]
-    APP --> Q7[Top Analytics Queries]
-
-    Q1 --> UI[JTabbedPane UI]
-    Q2 --> UI
-    Q3 --> UI
-    Q4 --> UI
-    Q5 --> UI
-    Q6 --> UI
-    Q7 --> UI
-
-    UI --> T[JTable Results]
-    UI --> B[SimpleBarChart]
-    UI --> L[SimpleLineChart]
-```
-
----
-
-### 11.4 Run the dashboard
-
-Από το project folder, κάνουμε compile:
-
-```powershell
-javac -cp ".;lib\mysql-connector-j-9.7.0.jar" Dashboard.java
-```
-
-και μετά run:
-
-```powershell
-java -cp ".;lib\mysql-connector-j-9.7.0.jar" Dashboard
-```
-
-Η εφαρμογή ζητά το MySQL root password και μετά ανοίγει το dashboard.
-
-Προϋποθέσεις:
-
-```text
-1. Η MySQL πρέπει να τρέχει.
-2. Η βάση bookdata_4991 πρέπει να έχει φορτωθεί.
-3. Το mysql-connector-j-9.7.0.jar πρέπει να βρίσκεται στον φάκελο lib/.
-```
-
----
-
-### 11.5 Main SQL/reporting logic
-
-Η εφαρμογή δεν φορτώνει όλα τα δεδομένα στη μνήμη της Java. Αντίθετα, εκτελεί SQL queries στη MySQL και εμφανίζει τα αποτελέσματα σε `JTable` και charts.
-
-Παραδείγματα reports που υποστηρίζονται:
-
-```text
-- COUNT rows ανά βασικό πίνακα
-- Articles per year για συνέδρια
-- Articles per year για περιοδικά
-- Author publication counts
-- Year profile statistics
-- Publication details με φίλτρο
-- Venue profile statistics
-- Top 20 conferences by articles
-- Top 20 journals by articles
-- Top 20 authors by articles
-- Top years by total publication count
-```
-
-Αυτό ακολουθεί τη σχεδιαστική επιλογή να γίνεται όσο γίνεται περισσότερη επεξεργασία μέσα στο DBMS, ειδικά επειδή η βάση περιέχει εκατομμύρια rows.
-
----
-
-### 11.6 Phase 2 design trade-offs
-
-#### Java Swing desktop app vs web app
-
-**Decision:** Η εφαρμογή υλοποιήθηκε ως Java Swing desktop app.
-
-**Why:** Το project είχε ήδη Java ETL και MySQL backend, άρα το Swing επιτρέπει γρήγορη κατασκευή λειτουργικού prototype χωρίς επιπλέον web framework.
-
-**Trade-off:** Η λύση είναι απλή, άμεση και εύκολη να τρέξει τοπικά, αλλά είναι λιγότερο μοντέρνα από ένα web dashboard.
-
----
-
-#### Direct SQL queries vs loading data into Java memory
-
-**Decision:** Τα reports εκτελούνται με SQL queries απευθείας στη MySQL.
-
-**Why:** Η βάση περιέχει εκατομμύρια εγγραφές, άρα τα aggregations πρέπει να γίνονται στο DBMS.
-
-**Trade-off:** Η εφαρμογή είναι πιο αποδοτική και αρχιτεκτονικά καθαρότερη, αλλά τα SQL queries είναι πιο σύνθετα.
-
----
-
-#### JTable + custom charts vs external chart library
-
-**Decision:** Χρησιμοποιούνται `JTable`, `SimpleBarChart` και `SimpleLineChart`.
-
-**Why:** Έτσι η εφαρμογή παραμένει απλή και δεν χρειάζεται εξωτερικές βιβλιοθήκες για charts.
-
-**Trade-off:** Τα custom charts είναι πιο απλά οπτικά από βιβλιοθήκες όπως JFreeChart, αλλά είναι πλήρως ελεγχόμενα, εύκολα να εξηγηθούν στο demo και αρκετά για το Phase 2 prototype.
-
----
-
-#### Bar chart + line chart for yearly data
-
-**Decision:** Τα yearly reports εμφανίζουν και bar chart και line chart.
-
-**Why:** Το bar chart βοηθά στη σύγκριση ανά χρονιά, ενώ το line chart δείχνει καλύτερα την τάση στον χρόνο.
-
-**Trade-off:** Το UI καταλαμβάνει περισσότερο χώρο, αλλά δίνει πιο πλήρη οπτική εικόνα.
-
----
-
-#### One-file prototype vs multi-class architecture
-
-**Decision:** Το Phase 2 dashboard είναι συγκεντρωμένο κυρίως στο `Dashboard.java`.
-
-**Why:** Για prototype φάσης ΙΙ, είναι πιο εύκολο να αναπτυχθεί, να τρέξει και να γίνει demo.
-
-**Trade-off:** Η λύση είναι πιο απλή αλλά όχι ιδανικά modular. Σε επόμενη φάση, μπορεί να διαχωριστεί σε:
-
-```text
-DatabaseConnection.java
-QueryService.java
-DashboardFrame.java
-ChartPanel.java
-```
-
----
-
-## 12. Large files and GitHub note
-
-Τα raw input datasets, τα generated `_Clean.csv` αρχεία και το database backup δεν γίνονται track στο GitHub, επειδή είναι μεγάλα generated/data files.
-
-Δεν ανεβαίνουν στο GitHub:
-
-```text
-input_article.csv
-input_inproceedings.csv
-*_Clean.csv
-Rejected_Rows.csv
-bookdata_4991_backup.sql
-```
-
-Ανεβαίνουν στο GitHub:
-
-```text
-ETL.java
-Dashboard.java
-bookdata_4991.sql
-README.md
-diagrams/
-DocumentationForETL/
-ProjectDescription-2025-2026.pdf
-```
-
-Η βάση μπορεί να αναπαραχθεί από την αρχή με:
-
-```powershell
-java ETL
-cmd /c """C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe"" --local-infile=1 -u root -p < bookdata_4991.sql"
-cmd /c """C:\Program Files\MySQL\MySQL Server 8.0\bin\mysqldump.exe"" -u root -p --databases bookdata_4991 > bookdata_4991_backup.sql"
-```
-
----
-
-## 13. Suggested project structure
-
-```text
-bibliometric_analytics_system/
-├── ETL.java
-├── Dashboard.java
-├── bookdata_4991.sql
-├── README.md
-├── .gitignore
+Bibliometric_Analytics_System/
+│
+├── src/
+│   ├── ETL.java
+│   └── Dashboard.java
+│
+├── data/
+│   ├── raw/
+│   │   ├── input_inproceedings.csv
+│   │   ├── input_article.csv
+│   │   ├── conference_ranking.csv
+│   │   └── journal_ranking_data_raw.csv
+│   │
+│   └── processed/
+│       ├── Authors_Clean.csv
+│       ├── Conferences_Clean.csv
+│       ├── Journals_Clean.csv
+│       ├── Conference_Articles_Clean.csv
+│       ├── Journal_Articles_Clean.csv
+│       ├── Conference_Article_Authors_Clean.csv
+│       └── Journal_Article_Authors_Clean.csv
+│
+├── sql/
+│   ├── schema.sql
+│   └── load_data.sql
+│
 ├── lib/
-│   └── mysql-connector-j-9.7.0.jar
-├── diagrams/
-│   ├── etl_pipeline_diagram.mmd
-│   ├── etl_activity_diagram.mmd
-│   ├── schema_er_diagram.mmd
-│   └── etl_pipeline_diagram.png
-├── DocumentationForETL/
-├── TemplateFinalReport/
-├── icore26_data/
-└── journal_ranking_data_raw/
+│   └── mysql-connector-j.jar
+│
+└── README.md
 ```
 
-Generated locally but not tracked in GitHub:
+## Requirements
+
+Before running the project, make sure you have installed:
+
+- Java JDK
+- MySQL Server
+- MySQL Connector/J
+
+You also need the raw data files placed in the correct folder.
+
+## How to Run the Project
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/your-username/bibliometric-analytics-system.git
+cd bibliometric-analytics-system
+```
+
+Replace `your-username` with your GitHub username.
+
+### 2. Add the Raw Data Files
+
+Place the raw data files inside:
+
+```text
+data/raw/
+```
+
+Required files:
 
 ```text
 input_inproceedings.csv
 input_article.csv
-Authors_Clean.csv
-Conferences_Clean.csv
-Journals_Clean.csv
-Conference_Articles_Clean.csv
-Journal_Articles_Clean.csv
-Conference_Article_Authors_Clean.csv
-Journal_Article_Authors_Clean.csv
-Rejected_Rows.csv
-bookdata_4991_backup.sql
 ```
+
+Optional ranking files:
+
+```text
+conference_ranking.csv
+journal_ranking_data_raw.csv
+```
+
+### 3. Add MySQL Connector/J
+
+Place the MySQL Connector/J `.jar` file inside:
+
+```text
+lib/
+```
+
+Example:
+
+```text
+lib/mysql-connector-j.jar
+```
+
+If your connector file has a longer name, use that exact file name in the commands below.
+
+### 4. Compile the Java Files
+
+For Windows:
+
+```bash
+javac -cp ".;lib/mysql-connector-j.jar" src\ETL.java src\Dashboard.java
+```
+
+For macOS / Linux:
+
+```bash
+javac -cp ".:lib/mysql-connector-j.jar" src/ETL.java src/Dashboard.java
+```
+
+### 5. Run the ETL Process
+
+For Windows:
+
+```bash
+java -cp ".;lib/mysql-connector-j.jar" src.ETL
+```
+
+For macOS / Linux:
+
+```bash
+java -cp ".:lib/mysql-connector-j.jar" src.ETL
+```
+
+After the ETL process finishes, the clean files will be created inside:
+
+```text
+data/processed/
+```
+
+### 6. Create and Load the MySQL Database
+
+Open MySQL and run your SQL scripts.
+
+Example:
+
+```bash
+mysql -u root -p < sql/schema.sql
+mysql -u root -p bookdata_4991 < sql/load_data.sql
+```
+
+If your SQL files have different names, replace the file names in the commands.
+
+### 7. Run the Dashboard
+
+For Windows:
+
+```bash
+java -cp ".;lib/mysql-connector-j.jar" src.Dashboard
+```
+
+For macOS / Linux:
+
+```bash
+java -cp ".:lib/mysql-connector-j.jar" src.Dashboard
+```
+
+The application will ask for the MySQL root password and then open the dashboard.
+
+## Example Workflow
+
+A typical workflow is:
+
+1. Place the raw data files in `data/raw/`
+2. Run `ETL.java`
+3. Load the processed files into MySQL
+4. Run `Dashboard.java`
+5. Explore the data through the dashboard tabs
+
+## Example Use Cases
+
+The system can be used to answer questions such as:
+
+- How many articles were published in a specific year?
+- Which conferences have the most publications?
+- Which journals have the most publications?
+- How has a conference's activity changed over time?
+- How has a journal's activity changed over time?
+- Which authors have the most publications?
+- What is the publication profile of a specific author?
+- What publications exist for a selected year?
+- What is the profile of a selected conference or journal?
+
+## Notes
+
+- The dashboard connects to the database `bookdata_4991`.
+- MySQL must be running before the dashboard starts.
+- The MySQL Connector/J file must be included in the classpath.
+- The raw data files may not be included in the repository if they are too large or provided separately by the course.
+- The `data/processed/` files are generated by the ETL process.
+- The application currently uses the MySQL `root` user and asks for the password at startup.
+
+## Future Improvements
+
+Possible future improvements include:
+
+- Add year-range filters to more dashboard tabs
+- Add export options for tables and reports
+- Add more advanced author collaboration analytics
+- Add better handling for missing database tables
+- Add configuration settings for database username and password
+- Add more advanced venue comparison tools
+- Add saved reports for common analytics queries
+
+## Author
+
+Developed by Asimina Mamasoula.
