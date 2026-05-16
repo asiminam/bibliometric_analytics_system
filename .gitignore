@@ -11,7 +11,7 @@ bookdata_4991_backup.sql
 *.sql.gz
 *.dump
 
-# Optional large data folders
+# Large data folders
 dblp_dataset/
 journal_ranking_data_raw/
 icore26_data/
@@ -21,3 +21,4 @@ icore26_data/
 *.class
 .DS_Store
 Thumbs.db
+FinalReport.rtf
