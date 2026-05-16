@@ -1,43 +1,26 @@
-﻿-- ============================================================================
--- bookdata_4991.sql
--- Repeatable schema + loading script for Phase I
--- MySQL 8.x / InnoDB / utf8mb4
---
--- Expected clean files produced by ETL.java in MySQL Uploads folder:
---   Authors_Clean.csv
---   Conferences_Clean.csv
---   Journals_Clean.csv
---   Conference_Articles_Clean.csv
---   Journal_Articles_Clean.csv
---   Conference_Article_Authors_Clean.csv
---   Journal_Article_Authors_Clean.csv
--- Optional:
---   Rejected_Rows.csv
---
--- IMPORTANT:
--- 1) The factual article tables are loaded BEFORE the N:M junction tables.
--- 2) The article_id in the junction files must be the internal article_id produced
---    by the ETL, NOT the original DBLP id.
--- 3) This script assumes tab-separated clean files with no header row.
---    If your generated files contain headers, add: IGNORE 1 LINES
---    to each LOAD DATA statement.
--- ============================================================================
-
+﻿-- this removes the old database if it already exists
 DROP DATABASE IF EXISTS bookdata_4991;
 
+-- this creates the database with UTF-8 support
 CREATE DATABASE bookdata_4991
     CHARACTER SET utf8mb4
     COLLATE utf8mb4_unicode_ci;
 
+-- this selects the database we will use
 USE bookdata_4991;
 
+-- this makes the connection use UTF-8 text
 SET NAMES utf8mb4;
+
+-- this makes the session use UTF-8 text
 SET CHARACTER SET utf8mb4;
 
--- =========================================================================
--- 1. LOOKUP TABLES
--- =========================================================================
 
+-- ------------------------------------------------------------------------------------------
+--                                  LOOKUP TABLES
+-- ------------------------------------------------------------------------------------------
+
+-- this table stores one row for each author
 CREATE TABLE Authors (
     author_id INT NOT NULL,
     author_name VARCHAR(255) NOT NULL,
@@ -45,6 +28,7 @@ CREATE TABLE Authors (
     UNIQUE KEY uq_authors_name (author_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- this table stores one row for each conference
 CREATE TABLE Conferences (
     conf_id INT NOT NULL,
     title VARCHAR(500) NOT NULL,
@@ -60,6 +44,7 @@ CREATE TABLE Conferences (
     KEY idx_conferences_primary_for (primary_for)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- this table stores one row for each journal
 CREATE TABLE Journals (
     journal_id INT NOT NULL,
     title VARCHAR(500) NOT NULL,
@@ -84,10 +69,12 @@ CREATE TABLE Journals (
     KEY idx_journals_country (country)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =========================================================================
--- 2. FACTUAL TABLES
--- =========================================================================
 
+-- ------------------------------------------------------------------------------------------
+--                                  FACTUAL TABLES
+-- ------------------------------------------------------------------------------------------
+
+-- this table stores conference article records
 CREATE TABLE Conference_Articles (
     article_id INT NOT NULL,
     original_dblp_id VARCHAR(100) NOT NULL,
@@ -108,6 +95,7 @@ CREATE TABLE Conference_Articles (
         CHECK (year BETWEEN 1900 AND 2100)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- this table stores journal article records
 CREATE TABLE Journal_Articles (
     article_id INT NOT NULL,
     original_dblp_id VARCHAR(100) NOT NULL,
@@ -130,10 +118,12 @@ CREATE TABLE Journal_Articles (
         CHECK (year BETWEEN 1900 AND 2100)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =========================================================================
--- 3. N:M JUNCTION TABLES
--- =========================================================================
 
+-- ------------------------------------------------------------------------------------------
+--                                  N:M JUNCTION TABLES
+-- ------------------------------------------------------------------------------------------
+
+-- this table connects conference articles to authors
 CREATE TABLE Conference_Article_Authors (
     article_id INT NOT NULL,
     author_id INT NOT NULL,
@@ -149,6 +139,7 @@ CREATE TABLE Conference_Article_Authors (
         ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- this table connects journal articles to authors
 CREATE TABLE Journal_Article_Authors (
     article_id INT NOT NULL,
     author_id INT NOT NULL,
@@ -164,7 +155,7 @@ CREATE TABLE Journal_Article_Authors (
         ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Optional table for ETL rejects / invalid rows.
+-- this table stores rows that were rejected by the ETL
 CREATE TABLE Rejected_Rows (
     rejected_id INT AUTO_INCREMENT PRIMARY KEY,
     source_file VARCHAR(255),
@@ -174,27 +165,31 @@ CREATE TABLE Rejected_Rows (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =========================================================================
--- 4. LOAD DATA
--- =========================================================================
--- Change this path if your MySQL secure_file_priv directory is different.
--- Check it with: SHOW VARIABLES LIKE 'secure_file_priv';
 
-LOAD DATA LOCAL INFILE './Authors_Clean.csv'
+-- ------------------------------------------------------------------------------------------
+--                                  LOAD DATA
+-- ------------------------------------------------------------------------------------------
+
+-- These absolute paths let MySQL Workbench find the ETL output files.
+
+-- this loads cleaned authors into the Authors table
+LOAD DATA LOCAL INFILE 'C:/Users/smama/Desktop/Bibliometric_Analytics_System/bibliometric_analytics_system/data/processed/Authors_Clean.csv'
 INTO TABLE Authors
 CHARACTER SET utf8mb4
 FIELDS TERMINATED BY '\t'
 LINES TERMINATED BY '\n'
 (author_id, author_name);
 
-LOAD DATA LOCAL INFILE './Conferences_Clean.csv'
+-- this loads cleaned conferences into the Conferences table
+LOAD DATA LOCAL INFILE 'C:/Users/smama/Desktop/Bibliometric_Analytics_System/bibliometric_analytics_system/data/processed/Conferences_Clean.csv'
 INTO TABLE Conferences
 CHARACTER SET utf8mb4
 FIELDS TERMINATED BY '\t'
 LINES TERMINATED BY '\n'
 (conf_id, title, acronym, source_name, rank_category, dblp_flag, primary_for);
 
-LOAD DATA LOCAL INFILE './Journals_Clean.csv'
+-- this loads cleaned journals into the Journals table
+LOAD DATA LOCAL INFILE 'C:/Users/smama/Desktop/Bibliometric_Analytics_System/bibliometric_analytics_system/data/processed/Journals_Clean.csv'
 INTO TABLE Journals
 CHARACTER SET utf8mb4
 FIELDS TERMINATED BY '\t'
@@ -202,6 +197,7 @@ LINES TERMINATED BY '\n'
 (@journal_id, @title, @oa, @country, @sjr_index, @cite_score, @h_index, @best_quartile,
  @best_subject_area, @total_docs, @total_docs_3y, @total_refs, @total_cites_3y,
  @citable_docs_3y, @cites_per_doc_2y, @refs_per_doc)
+-- this cleans empty strings and numeric text while loading journals
 SET
     journal_id = CAST(NULLIF(@journal_id, '') AS UNSIGNED),
     title = NULLIF(@title, ''),
@@ -220,46 +216,52 @@ SET
     cites_per_doc_2y = CAST(NULLIF(REPLACE(@cites_per_doc_2y, ',', ''), '') AS DECIMAL(12,3)),
     refs_per_doc = CAST(NULLIF(REPLACE(@refs_per_doc, ',', ''), '') AS DECIMAL(12,3));
 
-LOAD DATA LOCAL INFILE './Conference_Articles_Clean.csv'
+-- this loads cleaned conference articles
+LOAD DATA LOCAL INFILE 'C:/Users/smama/Desktop/Bibliometric_Analytics_System/bibliometric_analytics_system/data/processed/Conference_Articles_Clean.csv'
 INTO TABLE Conference_Articles
 CHARACTER SET utf8mb4
 FIELDS TERMINATED BY '\t'
 LINES TERMINATED BY '\n'
 (article_id, original_dblp_id, title, year, pages, conf_id);
 
-LOAD DATA LOCAL INFILE './Journal_Articles_Clean.csv'
+-- this loads cleaned journal articles
+LOAD DATA LOCAL INFILE 'C:/Users/smama/Desktop/Bibliometric_Analytics_System/bibliometric_analytics_system/data/processed/Journal_Articles_Clean.csv'
 INTO TABLE Journal_Articles
 CHARACTER SET utf8mb4
 FIELDS TERMINATED BY '\t'
 LINES TERMINATED BY '\n'
 (article_id, original_dblp_id, title, year, pages, url, journal_id);
 
-LOAD DATA LOCAL INFILE './Conference_Article_Authors_Clean.csv'
+-- this loads conference article-author links
+LOAD DATA LOCAL INFILE 'C:/Users/smama/Desktop/Bibliometric_Analytics_System/bibliometric_analytics_system/data/processed/Conference_Article_Authors_Clean.csv'
 INTO TABLE Conference_Article_Authors
 CHARACTER SET utf8mb4
 FIELDS TERMINATED BY '\t'
 LINES TERMINATED BY '\n'
 (article_id, author_id);
 
-LOAD DATA LOCAL INFILE './Journal_Article_Authors_Clean.csv'
+-- this loads journal article-author links
+LOAD DATA LOCAL INFILE 'C:/Users/smama/Desktop/Bibliometric_Analytics_System/bibliometric_analytics_system/data/processed/Journal_Article_Authors_Clean.csv'
 INTO TABLE Journal_Article_Authors
 CHARACTER SET utf8mb4
 FIELDS TERMINATED BY '\t'
 LINES TERMINATED BY '\n'
 (article_id, author_id);
 
--- Optional: enable only if ETL.java produced Rejected_Rows.csv with these 4 columns.
--- LOAD DATA LOCAL INFILE './Rejected_Rows.csv'
--- INTO TABLE Rejected_Rows
--- CHARACTER SET utf8mb4
--- FIELDS TERMINATED BY '\t'
--- LINES TERMINATED BY '\n'
--- (source_file, original_line_number, reason, raw_row);
+-- this loads rejected ETL rows
+LOAD DATA LOCAL INFILE 'C:/Users/smama/Desktop/Bibliometric_Analytics_System/bibliometric_analytics_system/data/rejected/Rejected_Rows.csv'
+INTO TABLE Rejected_Rows
+CHARACTER SET utf8mb4
+FIELDS TERMINATED BY '\t'
+LINES TERMINATED BY '\n'
+(source_file, original_line_number, reason, raw_row);
 
--- =========================================================================
--- 5. SANITY CHECKS
--- =========================================================================
 
+-- ------------------------------------------------------------------------------------------
+--                                  CHECKS
+-- ------------------------------------------------------------------------------------------
+
+-- this checks how many rows were loaded into each table
 SELECT 'Authors' AS table_name, COUNT(*) AS rows_loaded FROM Authors
 UNION ALL SELECT 'Conferences', COUNT(*) FROM Conferences
 UNION ALL SELECT 'Journals', COUNT(*) FROM Journals
@@ -268,24 +270,28 @@ UNION ALL SELECT 'Journal_Articles', COUNT(*) FROM Journal_Articles
 UNION ALL SELECT 'Conference_Article_Authors', COUNT(*) FROM Conference_Article_Authors
 UNION ALL SELECT 'Journal_Article_Authors', COUNT(*) FROM Journal_Article_Authors;
 
--- These should both return 0.
+-- this should return 0 if all conference article-author links are valid
 SELECT COUNT(*) AS orphan_conference_article_author_rows
 FROM Conference_Article_Authors caa
 LEFT JOIN Conference_Articles ca ON ca.article_id = caa.article_id
 LEFT JOIN Authors a ON a.author_id = caa.author_id
 WHERE ca.article_id IS NULL OR a.author_id IS NULL;
 
+-- this should return 0 if all journal article-author links are valid
 SELECT COUNT(*) AS orphan_journal_article_author_rows
 FROM Journal_Article_Authors jaa
 LEFT JOIN Journal_Articles ja ON ja.article_id = jaa.article_id
 LEFT JOIN Authors a ON a.author_id = jaa.author_id
 WHERE ja.article_id IS NULL OR a.author_id IS NULL;
 
--- =========================================================================
--- 6. FIRST-CUT VIEWS FOR PHASE I / PHASE II QUERIES
--- =========================================================================
 
+-- ------------------------------------------------------------------------------------------
+--                                  QUERIES
+-- ------------------------------------------------------------------------------------------
+
+-- this view combines conference and journal publications
 CREATE OR REPLACE VIEW v_publications_unified AS
+-- this part selects conference publications
 SELECT
     'CONFERENCE' AS publication_type,
     ca.article_id,
@@ -302,6 +308,7 @@ SELECT
 FROM Conference_Articles ca
 JOIN Conferences c ON c.conf_id = ca.conf_id
 UNION ALL
+-- this part selects journal publications
 SELECT
     'JOURNAL' AS publication_type,
     ja.article_id,
@@ -318,7 +325,9 @@ SELECT
 FROM Journal_Articles ja
 JOIN Journals j ON j.journal_id = ja.journal_id;
 
+-- this view combines conference and journal article-author data
 CREATE OR REPLACE VIEW v_article_authors_unified AS
+-- this part selects conference article authors
 SELECT
     'CONFERENCE' AS publication_type,
     ca.article_id,
@@ -335,6 +344,7 @@ JOIN Conferences c ON c.conf_id = ca.conf_id
 JOIN Conference_Article_Authors caa ON caa.article_id = ca.article_id
 JOIN Authors a ON a.author_id = caa.author_id
 UNION ALL
+-- this part selects journal article authors
 SELECT
     'JOURNAL' AS publication_type,
     ja.article_id,
@@ -351,6 +361,7 @@ JOIN Journals j ON j.journal_id = ja.journal_id
 JOIN Journal_Article_Authors jaa ON jaa.article_id = ja.article_id
 JOIN Authors a ON a.author_id = jaa.author_id;
 
+-- this view gives yearly statistics for conferences
 CREATE OR REPLACE VIEW v_conference_yearly_stats AS
 SELECT
     c.conf_id,
@@ -368,6 +379,7 @@ JOIN Conference_Articles ca ON ca.conf_id = c.conf_id
 LEFT JOIN Conference_Article_Authors caa ON caa.article_id = ca.article_id
 GROUP BY c.conf_id, c.title, c.acronym, c.rank_category, c.primary_for, ca.year;
 
+-- this view gives yearly statistics for journals
 CREATE OR REPLACE VIEW v_journal_yearly_stats AS
 SELECT
     j.journal_id,
@@ -384,6 +396,7 @@ JOIN Journal_Articles ja ON ja.journal_id = j.journal_id
 LEFT JOIN Journal_Article_Authors jaa ON jaa.article_id = ja.article_id
 GROUP BY j.journal_id, j.title, j.best_quartile, j.best_subject_area, ja.year;
 
+-- this view gives one summary profile per conference
 CREATE OR REPLACE VIEW v_conference_profile AS
 SELECT
     c.conf_id,
@@ -403,6 +416,7 @@ JOIN Conference_Articles ca ON ca.conf_id = c.conf_id
 LEFT JOIN Conference_Article_Authors caa ON caa.article_id = ca.article_id
 GROUP BY c.conf_id, c.title, c.acronym, c.rank_category, c.primary_for;
 
+-- this view gives one summary profile per journal
 CREATE OR REPLACE VIEW v_journal_profile AS
 SELECT
     j.journal_id,
@@ -425,6 +439,7 @@ JOIN Journal_Articles ja ON ja.journal_id = j.journal_id
 LEFT JOIN Journal_Article_Authors jaa ON jaa.article_id = ja.article_id
 GROUP BY j.journal_id, j.title, j.best_quartile, j.best_subject_area, j.country, j.sjr_index, j.cite_score, j.h_index;
 
+-- this view gives yearly statistics for authors
 CREATE OR REPLACE VIEW v_author_yearly_stats AS
 SELECT
     author_id,
@@ -436,6 +451,7 @@ SELECT
 FROM v_article_authors_unified
 GROUP BY author_id, author_name, year;
 
+-- this view gives one summary profile per author
 CREATE OR REPLACE VIEW v_author_profile AS
 SELECT
     author_id,
@@ -449,6 +465,7 @@ SELECT
 FROM v_article_authors_unified
 GROUP BY author_id, author_name;
 
+-- this view gives one summary profile per year
 CREATE OR REPLACE VIEW v_year_profile AS
 SELECT
     year,
@@ -461,38 +478,5 @@ SELECT
     COUNT(DISTINCT author_id) AS distinct_authors
 FROM v_article_authors_unified
 GROUP BY year;
-
--- =========================================================================
--- 7. EXAMPLE QUERIES
--- =========================================================================
-
--- Conference profile by acronym:
--- SELECT * FROM v_conference_profile WHERE acronym = 'ICDE';
-
--- Conference yearly line-chart data:
--- SELECT year, total_articles, total_authorships, distinct_authors
--- FROM v_conference_yearly_stats
--- WHERE acronym = 'ICDE'
--- ORDER BY year;
-
--- Journal profile by title:
--- SELECT * FROM v_journal_profile WHERE journal_title LIKE '%Knowledge and Data Engineering%';
-
--- Author profile:
--- SELECT * FROM v_author_profile WHERE author_name LIKE '%Dik Lun Lee%';
-
--- Year profile:
--- SELECT * FROM v_year_profile WHERE year = 2012;
-
--- Bar chart: total articles per conference:
--- SELECT acronym, conference_title, total_articles, avg_articles_per_year, avg_authors_per_article
--- FROM v_conference_profile
--- ORDER BY total_articles DESC;
-
--- Scatter plot: journal ranking metrics:
--- SELECT title, total_docs_3y, total_refs, total_cites_3y, citable_docs_3y,
---        cites_per_doc_2y, refs_per_doc
--- FROM Journals
--- WHERE total_docs_3y IS NOT NULL AND cites_per_doc_2y IS NOT NULL;
 
 

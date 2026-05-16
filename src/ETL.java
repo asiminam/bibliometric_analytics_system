@@ -17,56 +17,17 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * ETL for the bibliometric analytics project.
- *
- * What this version fixes compared with the first draft:
- * 1. It creates internal article_id values and uses the SAME ids in the
- *    article tables and in the N:M article-author tables.
- * 2. It also creates clean load files for the lookup tables and the factual
- *    article tables, not only for Authors and relations.
- * 3. It isolates invalid rows in Rejected_Rows.csv instead of silently loading
- *    broken records.
- * 4. It keeps the ETL repeatable: all ids are generated deterministically from
- *    the input processing order.
- * 5. It optionally enriches Conference and Journal lookup tables from ranking
- *    CSV files when such files are present in the data/raw folder.
- *
- * Expected input files relative to the project root:
- * - data/raw/input_inproceedings.csv
- * - data/raw/input_article.csv
- *
- * Optional input files, if available as CSV:
- * - data/raw/iCore26_KilledColumnsForLoading.csv
- * - data/raw/icore26_data/iCore26_KilledColumnsForLoading.csv
- * - data/raw/journal_ranking_data_raw.csv
- * - data/raw/journal_ranking_data_raw/journal_ranking_data_raw.csv
- *
- * Produced tab-delimited load files:
- * - data/processed/Authors_Clean.csv
- * - data/processed/Conferences_Clean.csv
- * - data/processed/Journals_Clean.csv
- * - data/processed/Conference_Articles_Clean.csv
- * - data/processed/Journal_Articles_Clean.csv
- * - data/processed/Conference_Article_Authors_Clean.csv
- * - data/processed/Journal_Article_Authors_Clean.csv
- * - data/rejected/Rejected_Rows.csv
- */
+// this class cleans the CSV files of the project
+
+// Here we read the raw files, clean the values, create ids, remove duplicates,
+// and write the final files that can be loaded into MySQL
 public class ETL {
 
-    /*
-     * Default input names used when the program is started without command-line
-     * arguments. A caller can still override them by passing:
-     *   java src.ETL <conference-input.csv> <journal-input.csv>
-     */
+    // input files used when file names aren't used in args
     private static final String DEFAULT_CONFERENCE_INPUT = "data/raw/input_inproceedings.csv";
     private static final String DEFAULT_JOURNAL_INPUT = "data/raw/input_article.csv";
 
-    /*
-     * Output file paths. The files are written as tab-delimited text because
-     * tabs are less likely to appear inside publication titles than commas or
-     * semicolons. Null database values are written later as \N.
-     */
+    // output files that the program creates
     private static final String AUTHORS_OUT = "data/processed/Authors_Clean.csv";
     private static final String CONFERENCES_OUT = "data/processed/Conferences_Clean.csv";
     private static final String JOURNALS_OUT = "data/processed/Journals_Clean.csv";
@@ -74,91 +35,66 @@ public class ETL {
     private static final String JOURNAL_ARTICLES_OUT = "data/processed/Journal_Articles_Clean.csv";
     private static final String CONFERENCE_ARTICLE_AUTHORS_OUT = "data/processed/Conference_Article_Authors_Clean.csv";
     private static final String JOURNAL_ARTICLE_AUTHORS_OUT = "data/processed/Journal_Article_Authors_Clean.csv";
-    private static final String REJECTED_ROWS_OUT = "data/rejected/Rejected_Rows.csv";
 
-    /*
-     * Author lookup state.
-     *
-     * authorIdsByNormalizedName stores the de-duplication key, for example a
-     * lower-case and accent-free version of the author name. authorNamesById
-     * stores the display value that will be written to Authors_Clean.csv.
-     *
-     * LinkedHashMap is used intentionally: it preserves insertion order, so
-     * generated ids are deterministic as long as the input row order is stable.
-     */
-    private final Map<String, Integer> authorIdsByNormalizedName = new LinkedHashMap<>();
-    private final Map<Integer, String> authorNamesById = new LinkedHashMap<>();
+    // maps to give every author only one id
+    private final Map<String, Integer> authorIdsByNormalizedName = new LinkedHashMap<>();   // map for checking duplicates
+    private final Map<Integer, String> authorNamesById = new LinkedHashMap<>();             // map for writing the clean authors file
 
-    /*
-     * Conference lookup state.
-     *
-     * A single conference can be discovered from the ranking file, from the
-     * article file, or from both. conferenceIdsByAlias lets the ETL match either
-     * acronym or title to the same generated conference_id.
-     */
-    private final Map<String, Integer> conferenceIdsByAlias = new LinkedHashMap<>();
-    private final Map<Integer, Conference> conferencesById = new LinkedHashMap<>();
+    // maps that keep the conferences found
+    private final Map<String, Integer> conferenceIdsByAlias = new LinkedHashMap<>();        // map for finding conference by alias
+    private final Map<Integer, Conference> conferencesById = new LinkedHashMap<>();         // map for finding conference by id
 
-    /*
-     * Journal lookup state.
-     *
-     * Journals are matched primarily by normalized title. The alias map allows
-     * the ranking data and article data to enrich the same Journal object.
-     */
-    private final Map<String, Integer> journalIdsByAlias = new LinkedHashMap<>();
-    private final Map<Integer, Journal> journalsById = new LinkedHashMap<>();
+    // maps that keep the journals found
+    private final Map<String, Integer> journalIdsByAlias = new LinkedHashMap<>();           // map for finding journal by alias
+    private final Map<Integer, Journal> journalsById = new LinkedHashMap<>();               // map for finding journal by id
 
-    /*
-     * Relation de-duplication state.
-     *
-     * Each set stores keys in the form "<article_id>-<author_id>". This avoids
-     * writing duplicate rows when the same article/author relationship appears
-     * more than once in the source data.
-     */
-    private final Set<String> seenConferenceArticleAuthorRelations = new LinkedHashSet<>();
-    private final Set<String> seenJournalArticleAuthorRelations = new LinkedHashSet<>();
+    // sets to avoid duplicate article-author pairs
+    private final Set<String> seenConferenceArticleAuthorRelations = new LinkedHashSet<>(); // set for conference article-author duplicate relations
+    private final Set<String> seenJournalArticleAuthorRelations = new LinkedHashSet<>();    // set for journal article-author duplicate relations
 
-    // original_dblp_id -> generated article_id. Used to avoid duplicate article rows
-    // while still allowing us to merge any additional author relations.
+    // original_dblp_id -> generated article_id
+    // used to avoid duplicate article rows while still allowing us to merge any additional author relations
     private final Map<String, Integer> conferenceArticleIdsByOriginalId = new HashMap<>();
     private final Map<String, Integer> journalArticleIdsByOriginalId = new HashMap<>();
 
-    /*
-     * Monotonic id counters for generated primary keys. They start at 1 so the
-     * output files can be loaded directly into database tables that expect
-     * positive integer ids.
-     */
+    // these counters create new ids (database ids start from 1)
     private int nextAuthorId = 1;
     private int nextConferenceId = 1;
     private int nextJournalId = 1;
     private int nextConferenceArticleId = 1;
     private int nextJournalArticleId = 1;
 
-    /*
-     * Writers are opened once in run() and kept as fields so helper methods can
-     * stream rows immediately. This keeps memory usage low for the large article
-     * tables while lookup tables are still accumulated in maps.
-     */
+    // write rows into the output files
     private BufferedWriter conferenceArticlesWriter;
     private BufferedWriter journalArticlesWriter;
     private BufferedWriter conferenceArticleAuthorsWriter;
     private BufferedWriter journalArticleAuthorsWriter;
-    private BufferedWriter rejectedRowsWriter;
 
-    /**
-     * Program entry point.
-     *
-     * The first optional argument is the conference article input file and the
-     * second optional argument is the journal article input file. If arguments
-     * are not provided, the default project file names are used.
-     */
+    // main is where the program starts
     public static void main(String[] args) {
-        String conferenceInput = args.length >= 1 ? args[0] : DEFAULT_CONFERENCE_INPUT;
-        String journalInput = args.length >= 2 ? args[1] : DEFAULT_JOURNAL_INPUT;
+        String conferenceInput;
+        String journalInput;
+
+        // user-given file names
+        // if not given, use the default project files
+        if (args.length >= 1) {
+            conferenceInput = args[0];
+        } else {
+            conferenceInput = DEFAULT_CONFERENCE_INPUT;
+        }
+
+        if (args.length >= 2) {
+            journalInput = args[1];
+        } else {
+            journalInput = DEFAULT_JOURNAL_INPUT;
+        }
 
         ETL etl = new ETL();
         try {
+            // run the ETL using the selected input files
             etl.run(conferenceInput, journalInput);
+
+            // print the files that were created
             System.out.println("\nETL completed successfully.");
             System.out.println("Generated load files:");
             System.out.println("- " + AUTHORS_OUT);
@@ -168,54 +104,37 @@ public class ETL {
             System.out.println("- " + JOURNAL_ARTICLES_OUT);
             System.out.println("- " + CONFERENCE_ARTICLE_AUTHORS_OUT);
             System.out.println("- " + JOURNAL_ARTICLE_AUTHORS_OUT);
-            System.out.println("- " + REJECTED_ROWS_OUT);
         } catch (IOException e) {
             System.err.println("Fatal ETL error: " + e.getMessage());
             e.printStackTrace();
         }
     }
 
-    /**
-     * Executes the complete ETL pipeline.
-     *
-     * The pipeline is intentionally ordered:
-     * 1. Load optional conference and journal ranking data first, so later
-     *    article rows can reuse and enrich the same lookup records.
-     * 2. Open the large output writers and stream article/relation rows while
-     *    processing the source files.
-     * 3. Close streamed writers, then write lookup tables from the maps that
-     *    were built during processing.
-     *
-     * @param conferenceInput path to the DBLP inproceedings-style CSV file
-     * @param journalInput path to the DBLP article-style CSV file
-     * @throws IOException if an input file cannot be read or an output file
-     *         cannot be written
-     */
+    // this method runs the whole ETL process
+    // first it loads optional ranking files
+    // then it reads the article files
+    // at the end, it writes the lookup tables
     private void run(String conferenceInput, String journalInput) throws IOException {
-        // Load enrichment files before article processing so ranking metadata
-        // can be attached to the same conference/journal ids used by articles.
+        // load files before article processing so ranking data can be attached
+        // to the same conference/journal ids used by articles
         loadOptionalConferenceRankings();
         loadOptionalJournalRankings();
 
-        // Article and relation outputs can become large, so they are streamed
-        // directly to disk instead of being stored in memory.
+        // article and relation outputs are very big
+        // put them directly into disk instead of memory
         try (
             BufferedWriter confArticles = newUtf8Writer(CONFERENCE_ARTICLES_OUT);
             BufferedWriter journalArticles = newUtf8Writer(JOURNAL_ARTICLES_OUT);
             BufferedWriter confArticleAuthors = newUtf8Writer(CONFERENCE_ARTICLE_AUTHORS_OUT);
-            BufferedWriter journalArticleAuthors = newUtf8Writer(JOURNAL_ARTICLE_AUTHORS_OUT);
-            BufferedWriter rejected = newUtf8Writer(REJECTED_ROWS_OUT)
+            BufferedWriter journalArticleAuthors = newUtf8Writer(JOURNAL_ARTICLE_AUTHORS_OUT)
         ) {
+            // keep these writers so helper methods can use them
             this.conferenceArticlesWriter = confArticles;
             this.journalArticlesWriter = journalArticles;
             this.conferenceArticleAuthorsWriter = confArticleAuthors;
             this.journalArticleAuthorsWriter = journalArticleAuthors;
-            this.rejectedRowsWriter = rejected;
 
-            // Rejected_Rows.csv always starts with a header so data-quality
-            // problems can be inspected independently after the run.
-            writeRejectedHeader();
-
+            // process both main article files
             System.out.println("Starting ETL for conferences: " + conferenceInput);
             processConferenceArticles(conferenceInput);
 
@@ -223,10 +142,11 @@ public class ETL {
             processJournalArticles(journalInput);
         }
 
-        // Lookup tables depend on all source rows because new authors,
-        // conferences, and journals may be discovered at any point.
+        // lookup tables depend on all source rows because new authors,
+        // conferences, and journals may be found anytime
         writeLookupTables();
 
+        // print a small report at the end
         System.out.println("\nSummary");
         System.out.println("Unique authors: " + authorNamesById.size());
         System.out.println("Conferences: " + conferencesById.size());
@@ -237,53 +157,59 @@ public class ETL {
         System.out.println("Journal article-author relations: " + seenJournalArticleAuthorRelations.size());
     }
 
-    /**
-     * Reads the conference/inproceedings input file and writes cleaned
-     * conference article rows plus article-author relation rows.
-     *
-     * Each accepted source row must have an original DBLP id, title, valid year,
-     * and conference/booktitle value. Rows that fail these checks are written to
-     * Rejected_Rows.csv with the original raw line.
-     */
+    // read the conference articles file
+    // for every good row, it writes a clean article row and the author links
+    // if a row has important missing data, it skips the row
     private void processConferenceArticles(String inputFile) throws IOException {
+        // turn the file name into a path object
         Path inputPath = Paths.get(inputFile);
         if (!Files.exists(inputPath)) {
             System.err.println("File not found, skipping: " + inputFile);
             return;
         }
 
+        // open the input file using UTF-8
         try (BufferedReader reader = Files.newBufferedReader(inputPath, StandardCharsets.UTF_8)) {
             String headerLine = reader.readLine();
             if (headerLine == null) {
                 return;
             }
 
-            // The source data may be comma-, semicolon-, or tab-delimited. The
-            // delimiter is inferred from the header, then reused for every row.
+            // find what separates the columns in this file
             char delimiter = detectDelimiter(headerLine);
             List<String> headers = splitDelimitedLine(headerLine, delimiter);
             Map<String, Integer> headerIndex = buildHeaderIndex(headers);
 
-            // Resolve required and optional columns by normalized header names.
-            // Multiple candidate names are accepted to support slightly
-            // different exports without editing the code.
-            int idIndex = requiredIndex(headerIndex, inputFile, "id", "original_dblp_id", "dblp_id");
-            int authorsIndex = optionalIndex(headerIndex, "authors", "author");
-            int titleIndex = requiredIndex(headerIndex, inputFile, "title", "paper_title");
-            int yearIndex = requiredIndex(headerIndex, inputFile, "year");
-            int pagesIndex = optionalIndex(headerIndex, "pages");
-            int booktitleIndex = requiredIndex(headerIndex, inputFile, "booktitle", "conference", "acronym", "venue");
+            // find the positions of the columns that we need
+            String idColumn = "id";
+            String originalDblpIdColumn = "original_dblp_id";
+            String dblpIdColumn = "dblp_id";
+            String authorsColumn = "authors";
+            String authorColumn = "author";
+            String titleColumn = "title";
+            String paperTitleColumn = "paper_title";
+            String yearColumn = "year";
+            String pagesColumn = "pages";
+            String booktitleColumn = "booktitle";
+            String conferenceColumn = "conference";
+            String acronymColumn = "acronym";
+            String venueColumn = "venue";
+
+            int idIndex = requiredIndex(headerIndex, inputFile, idColumn, originalDblpIdColumn, dblpIdColumn);
+            int authorsIndex = optionalIndex(headerIndex, authorsColumn, authorColumn);
+            int titleIndex = requiredIndex(headerIndex, inputFile, titleColumn, paperTitleColumn);
+            int yearIndex = requiredIndex(headerIndex, inputFile, yearColumn);
+            int pagesIndex = optionalIndex(headerIndex, pagesColumn);
+            int booktitleIndex = requiredIndex(headerIndex, inputFile, booktitleColumn, conferenceColumn, acronymColumn, venueColumn);
 
             String line;
-            int lineNumber = 1;
             int processed = 0;
 
             while ((line = reader.readLine()) != null) {
-                lineNumber++;
+                // split the current row into columns
                 List<String> columns = splitDelimitedLine(line, delimiter);
 
-                // Extract and lightly clean all fields needed by the target
-                // schema. valueAt() returns null for missing optional columns.
+                // get the values from this row
                 String originalDblpId = valueAt(columns, idIndex);
                 String title = valueAt(columns, titleIndex);
                 String yearText = valueAt(columns, yearIndex);
@@ -291,29 +217,23 @@ public class ETL {
                 String booktitle = valueAt(columns, booktitleIndex);
                 String authors = valueAt(columns, authorsIndex);
 
-                // Reject rows that would violate required database fields or
-                // create article records that cannot be joined back to DBLP.
+                // if important values are missing -> skip this row
                 if (isNullLike(originalDblpId)) {
-                    reject(inputFile, lineNumber, "Missing original DBLP id", line);
                     continue;
                 }
                 if (isNullLike(title)) {
-                    reject(inputFile, lineNumber, "Missing conference article title", line);
                     continue;
                 }
                 Integer year = parseYear(yearText);
                 if (year == null) {
-                    reject(inputFile, lineNumber, "Invalid or missing year: " + safe(yearText), line);
                     continue;
                 }
                 if (isNullLike(booktitle)) {
-                    reject(inputFile, lineNumber, "Missing conference/booktitle value", line);
                     continue;
                 }
 
-                // Create/reuse lookup ids, then stream the fact row and its
-                // N:M author relationships to the output files.
-                int conferenceId = getOrCreateConference(booktitle, booktitle, null, null);
+                // create or reuse ids, then write the clean data
+                int conferenceId = getOrCreateConference(booktitle);
                 int articleId = getOrCreateConferenceArticle(originalDblpId, title, year, pages, conferenceId);
                 writeAuthorRelations(authors, articleId, conferenceArticleAuthorsWriter, seenConferenceArticleAuthorRelations);
                 processed++;
@@ -323,53 +243,60 @@ public class ETL {
         }
     }
 
-    /**
-     * Reads the journal-article input file and writes cleaned journal article
-     * rows plus article-author relation rows.
-     *
-     * This method mirrors processConferenceArticles(), but it expects a journal
-     * title instead of a conference/booktitle value and also supports the
-     * optional volume column used by journal publications.
-     */
+    // this method does the same thing as processConferenceArticles,
+    // but for journal articles
     private void processJournalArticles(String inputFile) throws IOException {
+        // turn the file name into a path object
         Path inputPath = Paths.get(inputFile);
         if (!Files.exists(inputPath)) {
             System.err.println("File not found, skipping: " + inputFile);
             return;
         }
 
+        // open the input file using UTF-8
         try (BufferedReader reader = Files.newBufferedReader(inputPath, StandardCharsets.UTF_8)) {
             String headerLine = reader.readLine();
             if (headerLine == null) {
                 return;
             }
 
-            // Detect the delimiter once from the header. The custom parser below
-            // understands quoted values, so delimiters inside titles are safe.
+            // find what separates the columns in this file
             char delimiter = detectDelimiter(headerLine);
             List<String> headers = splitDelimitedLine(headerLine, delimiter);
             Map<String, Integer> headerIndex = buildHeaderIndex(headers);
 
-            // Column matching is intentionally tolerant of common name variants
-            // such as "dblp_id" versus "original_dblp_id".
-            int idIndex = requiredIndex(headerIndex, inputFile, "id", "original_dblp_id", "dblp_id");
-            int authorsIndex = optionalIndex(headerIndex, "authors", "author");
-            int titleIndex = requiredIndex(headerIndex, inputFile, "title", "paper_title");
-            int yearIndex = requiredIndex(headerIndex, inputFile, "year");
-            int pagesIndex = optionalIndex(headerIndex, "pages");
-            int volumeIndex = optionalIndex(headerIndex, "volume", "vol");
-            int journalIndex = requiredIndex(headerIndex, inputFile, "journal", "journal_title", "venue");
+            // find the positions of the columns that we need
+            String idColumn = "id";
+            String originalDblpIdColumn = "original_dblp_id";
+            String dblpIdColumn = "dblp_id";
+            String authorsColumn = "authors";
+            String authorColumn = "author";
+            String titleColumn = "title";
+            String paperTitleColumn = "paper_title";
+            String yearColumn = "year";
+            String pagesColumn = "pages";
+            String volumeColumn = "volume";
+            String volColumn = "vol";
+            String journalColumn = "journal";
+            String journalTitleColumn = "journal_title";
+            String venueColumn = "venue";
+
+            int idIndex = requiredIndex(headerIndex, inputFile, idColumn, originalDblpIdColumn, dblpIdColumn);
+            int authorsIndex = optionalIndex(headerIndex, authorsColumn, authorColumn);
+            int titleIndex = requiredIndex(headerIndex, inputFile, titleColumn, paperTitleColumn);
+            int yearIndex = requiredIndex(headerIndex, inputFile, yearColumn);
+            int pagesIndex = optionalIndex(headerIndex, pagesColumn);
+            int volumeIndex = optionalIndex(headerIndex, volumeColumn, volColumn);
+            int journalIndex = requiredIndex(headerIndex, inputFile, journalColumn, journalTitleColumn, venueColumn);
 
             String line;
-            int lineNumber = 1;
             int processed = 0;
 
             while ((line = reader.readLine()) != null) {
-                lineNumber++;
+                // split the current row into columns
                 List<String> columns = splitDelimitedLine(line, delimiter);
 
-                // Pull the raw row into named variables before validation. This
-                // keeps the checks below aligned with the database fields.
+                // get the values from this row
                 String originalDblpId = valueAt(columns, idIndex);
                 String title = valueAt(columns, titleIndex);
                 String yearText = valueAt(columns, yearIndex);
@@ -378,29 +305,24 @@ public class ETL {
                 String journalTitle = valueAt(columns, journalIndex);
                 String authors = valueAt(columns, authorsIndex);
 
-                // Required fields are validated before any output is written,
-                // so rejected rows never produce partial article/relation data.
+                // if important values are missing -> skip this row
                 if (isNullLike(originalDblpId)) {
-                    reject(inputFile, lineNumber, "Missing original DBLP id", line);
                     continue;
                 }
                 if (isNullLike(title)) {
-                    reject(inputFile, lineNumber, "Missing journal article title", line);
                     continue;
                 }
                 Integer year = parseYear(yearText);
                 if (year == null) {
-                    reject(inputFile, lineNumber, "Invalid or missing year: " + safe(yearText), line);
                     continue;
                 }
                 if (isNullLike(journalTitle)) {
-                    reject(inputFile, lineNumber, "Missing journal value", line);
                     continue;
                 }
 
-                // The journal lookup may already exist from the ranking file;
-                // otherwise a new lookup row is created from the article venue.
-                int journalId = getOrCreateJournal(journalTitle, null, null, null, null, null, null);
+                // the journal may already exist from the ranking file
+                // if not, a new journal id is created from the article row
+                int journalId = getOrCreateJournal(journalTitle);
                 int articleId = getOrCreateJournalArticle(originalDblpId, title, year, volume, pages, journalId);
                 writeAuthorRelations(authors, articleId, journalArticleAuthorsWriter, seenJournalArticleAuthorRelations);
                 processed++;
@@ -410,126 +332,183 @@ public class ETL {
         }
     }
 
-    /**
-     * Returns the generated id for a conference, creating a new conference row
-     * when no matching acronym/title alias exists yet.
-     *
-     * Ranking data and article data can arrive in either order. If the
-     * conference already exists, this method fills missing ranking fields
-     * without overwriting values that were already loaded.
-     */
+    // this method returns the id of a conference
+    // if the conference does not exist yet, it creates it
+    private int getOrCreateConference(String title) {
+        // article rows may only have one conference value
+        String acronym = title;
+        String rankCategory = null;
+        String primaryFor = null;
+
+        // use the longer method with empty ranking data
+        return getOrCreateConference(acronym, title, rankCategory, primaryFor);
+    }
+
     private int getOrCreateConference(String acronym, String title, String rankCategory, String primaryFor) {
+        // clean the two possible conference names
         String cleanedAcronym = cleanText(acronym);
         String cleanedTitle = cleanText(title);
-        String lookupValue = !isNullLike(cleanedAcronym) ? cleanedAcronym : cleanedTitle;
+
+        // prefer acronym for lookup when it exists
+        String lookupValue;
+        if (!isNullLike(cleanedAcronym)) {
+            lookupValue = cleanedAcronym;
+        } else {
+            lookupValue = cleanedTitle;
+        }
+
         String key = normalizeLookupKey(lookupValue);
 
+        // check if this conference already exists
         Integer existingId = conferenceIdsByAlias.get(key);
         if (existingId != null) {
             Conference existing = conferencesById.get(existingId);
-            // Preserve existing metadata, but enrich blank fields when a later
-            // ranking row provides information that article rows did not have.
-            if (isNullLike(existing.rankCategory) && !isNullLike(rankCategory)) {
-                existing.rankCategory = cleanText(rankCategory);
+            // keep old data, but fill empty ranking fields if we find them later
+
+            if (isNullLike(existing.rankCategory)) {
+                if (!isNullLike(rankCategory)) {
+                    existing.rankCategory = cleanText(rankCategory);
+                }
             }
-            if (isNullLike(existing.primaryFor) && !isNullLike(primaryFor)) {
-                existing.primaryFor = cleanText(primaryFor);
+            if (isNullLike(existing.primaryFor)) {
+                if (!isNullLike(primaryFor)) {
+                    existing.primaryFor = cleanText(primaryFor);
+                }
             }
             addConferenceAliases(existingId, cleanedAcronym, cleanedTitle);
             return existingId;
         }
 
-        // No alias matched, so create a new generated conference_id and remember
-        // both acronym and title as future lookup keys.
+        // if no conference matched, create a new conference_id
+        // also save both the acronym and title for searching later
         int id = nextConferenceId++;
-        Conference conference = new Conference(id, cleanedAcronym, cleanedTitle, cleanText(rankCategory), cleanText(primaryFor));
+        String cleanedRankCategory = cleanText(rankCategory);
+        String cleanedPrimaryFor = cleanText(primaryFor);
+
+        Conference conference = new Conference(id, cleanedAcronym, cleanedTitle, cleanedRankCategory, cleanedPrimaryFor);
         conferencesById.put(id, conference);
+
+        // save names that can find this conference later
         addConferenceAliases(id, cleanedAcronym, cleanedTitle);
         return id;
     }
 
-    /**
-     * Returns the generated id for a journal, creating a new journal row when no
-     * matching or similar title is known.
-     *
-     * Journal ranking files often use slightly different title strings than
-     * DBLP. The exact alias map is checked first, then findSimilarJournalId()
-     * performs a conservative containment match for long titles.
-     */
+    // this method returns the id of a journal
+    // if the journal does not exist yet, it creates it
+    private int getOrCreateJournal(String title) {
+        // article rows only know the journal title
+        String country = null;
+        String sjrIndex = null;
+        String bestQuartile = null;
+        String totalDocs3y = null;
+        String totalRefs = null;
+        String citesPerDoc2y = null;
+
+        // use the longer method with empty ranking data
+        return getOrCreateJournal(title, country, sjrIndex, bestQuartile, totalDocs3y, totalRefs, citesPerDoc2y);
+    }
+
     private int getOrCreateJournal(String title, String country, String sjrIndex, String bestQuartile,
                                    String totalDocs3y, String totalRefs, String citesPerDoc2y) {
+        // clean the title before using it as a lookup key
         String cleanedTitle = cleanText(title);
         String key = normalizeLookupKey(cleanedTitle);
 
+        // first try an exact normalized match
         Integer existingId = journalIdsByAlias.get(key);
         if (existingId == null) {
+            // if exact match fails, try a simple similar-title match
             existingId = findSimilarJournalId(cleanedTitle);
         }
 
         if (existingId != null) {
-            // Reuse the existing journal_id and add any ranking attributes that
-            // are still blank on the lookup record.
+            // reuse the existing journal_id
+            // and fill empty ranking fields if possible
             Journal existing = journalsById.get(existingId);
             updateIfMissing(existing, country, sjrIndex, bestQuartile, totalDocs3y, totalRefs, citesPerDoc2y);
             addJournalAliases(existingId, cleanedTitle);
             return existingId;
         }
 
-        // The title is new to this run. Clean numeric ranking fields before
-        // storing them so the output is ready for database loading.
+        // if the journal title is new, create a new journal id
+        // clean the ranking numbers before saving them
         int id = nextJournalId++;
+        String cleanedCountry = cleanText(country);
+        String cleanedSjrIndex = cleanDecimal(sjrIndex);
+        String cleanedBestQuartile = cleanText(bestQuartile);
+        String cleanedTotalDocs3y = cleanInteger(totalDocs3y);
+        String cleanedTotalRefs = cleanInteger(totalRefs);
+        String cleanedCitesPerDoc2y = cleanDecimal(citesPerDoc2y);
+
         Journal journal = new Journal(
             id,
             cleanedTitle,
-            cleanText(country),
-            cleanDecimal(sjrIndex),
-            cleanText(bestQuartile),
-            cleanInteger(totalDocs3y),
-            cleanInteger(totalRefs),
-            cleanDecimal(citesPerDoc2y)
+            cleanedCountry,
+            cleanedSjrIndex,
+            cleanedBestQuartile,
+            cleanedTotalDocs3y,
+            cleanedTotalRefs,
+            cleanedCitesPerDoc2y
         );
         journalsById.put(id, journal);
+
+        // save the title so later rows can find this journal
         addJournalAliases(id, cleanedTitle);
         return id;
     }
 
-    /**
-     * Adds journal ranking/enrichment values only when the current Journal
-     * object does not already have a value. This prevents later sparse rows from
-     * replacing richer metadata loaded earlier in the run.
-     */
+    // this only fills journal ranking fields that are still empty
     private void updateIfMissing(Journal existing, String country, String sjrIndex, String bestQuartile,
                                  String totalDocs3y, String totalRefs, String citesPerDoc2y) {
-        if (isNullLike(existing.country) && !isNullLike(country)) {
-            existing.country = cleanText(country);
+        // add country only if it was missing before
+        if (isNullLike(existing.country)) {
+            if (!isNullLike(country)) {
+                String cleanedCountry = cleanText(country);
+                existing.country = cleanedCountry;
+            }
         }
-        if (isNullLike(existing.sjrIndex) && !isNullLike(sjrIndex)) {
-            existing.sjrIndex = cleanDecimal(sjrIndex);
+        // add SJR only if it was missing before
+        if (isNullLike(existing.sjrIndex)) {
+            if (!isNullLike(sjrIndex)) {
+                String cleanedSjrIndex = cleanDecimal(sjrIndex);
+                existing.sjrIndex = cleanedSjrIndex;
+            }
         }
-        if (isNullLike(existing.bestQuartile) && !isNullLike(bestQuartile)) {
-            existing.bestQuartile = cleanText(bestQuartile);
+        // add quartile only if it was missing before
+        if (isNullLike(existing.bestQuartile)) {
+            if (!isNullLike(bestQuartile)) {
+                String cleanedBestQuartile = cleanText(bestQuartile);
+                existing.bestQuartile = cleanedBestQuartile;
+            }
         }
-        if (isNullLike(existing.totalDocs3y) && !isNullLike(totalDocs3y)) {
-            existing.totalDocs3y = cleanInteger(totalDocs3y);
+        // add document count only if it was missing before
+        if (isNullLike(existing.totalDocs3y)) {
+            if (!isNullLike(totalDocs3y)) {
+                String cleanedTotalDocs3y = cleanInteger(totalDocs3y);
+                existing.totalDocs3y = cleanedTotalDocs3y;
+            }
         }
-        if (isNullLike(existing.totalRefs) && !isNullLike(totalRefs)) {
-            existing.totalRefs = cleanInteger(totalRefs);
+        // add reference count only if it was missing before
+        if (isNullLike(existing.totalRefs)) {
+            if (!isNullLike(totalRefs)) {
+                String cleanedTotalRefs = cleanInteger(totalRefs);
+                existing.totalRefs = cleanedTotalRefs;
+            }
         }
-        if (isNullLike(existing.citesPerDoc2y) && !isNullLike(citesPerDoc2y)) {
-            existing.citesPerDoc2y = cleanDecimal(citesPerDoc2y);
+        // add cites per document only if it was missing before
+        if (isNullLike(existing.citesPerDoc2y)) {
+            if (!isNullLike(citesPerDoc2y)) {
+                String cleanedCitesPerDoc2y = cleanDecimal(citesPerDoc2y);
+                existing.citesPerDoc2y = cleanedCitesPerDoc2y;
+            }
         }
     }
 
-    /**
-     * Returns the generated id for a conference article and writes the article
-     * row the first time the original DBLP id is seen.
-     *
-     * Duplicate source rows reuse the same article_id, which allows any missing
-     * author relationships from later duplicate rows to be merged without
-     * creating duplicate article records.
-     */
+    // this writes a conference article only the first time we see it
+    // if we see the same DBLP id again, we reuse the old article id
     private int getOrCreateConferenceArticle(String originalDblpId, String title, int year, String pages, int conferenceId)
             throws IOException {
+        // use the original DBLP id to avoid duplicate article rows
         String cleanedOriginalId = cleanText(originalDblpId);
         Integer existingId = conferenceArticleIdsByOriginalId.get(cleanedOriginalId);
         if (existingId != null) {
@@ -539,29 +518,31 @@ public class ETL {
         int articleId = nextConferenceArticleId++;
         conferenceArticleIdsByOriginalId.put(cleanedOriginalId, articleId);
 
-        // The target order matches the expected Conference_Articles table load
-        // format: article id, original DBLP id, title, year, pages, conference.
+        // write the fields in the same order as the Conference_Articles table
+        // article id, original DBLP id, title, year, pages, conference id
+        // convert numbers to text before writing the row
+        String articleIdText = String.valueOf(articleId);
+        String cleanedTitle = cleanText(title);
+        String yearText = String.valueOf(year);
+        String cleanedPages = cleanText(pages);
+        String conferenceIdText = String.valueOf(conferenceId);
+
         writeTsvLine(conferenceArticlesWriter,
-            String.valueOf(articleId),
+            articleIdText,
             cleanedOriginalId,
-            cleanText(title),
-            String.valueOf(year),
-            cleanText(pages),
-            String.valueOf(conferenceId)
+            cleanedTitle,
+            yearText,
+            cleanedPages,
+            conferenceIdText
         );
 
         return articleId;
     }
 
-    /**
-     * Returns the generated id for a journal article and writes the article row
-     * the first time the original DBLP id is seen.
-     *
-     * This mirrors getOrCreateConferenceArticle(), with volume included because
-     * journal articles commonly store publication volume separately.
-     */
+    // this writes a journal article only the first time we see it
     private int getOrCreateJournalArticle(String originalDblpId, String title, int year, String volume, String pages, int journalId)
             throws IOException {
+        // use the original DBLP id to avoid duplicate article rows
         String cleanedOriginalId = cleanText(originalDblpId);
         Integer existingId = journalArticleIdsByOriginalId.get(cleanedOriginalId);
         if (existingId != null) {
@@ -571,101 +552,111 @@ public class ETL {
         int articleId = nextJournalArticleId++;
         journalArticleIdsByOriginalId.put(cleanedOriginalId, articleId);
 
-        // The target order matches the expected Journal_Articles table load
-        // format: article id, original DBLP id, title, year, volume, pages, journal.
+        // write the fields in the same order as the Journal_Articles table
+        // article id, original DBLP id, title, year, volume, pages, journal id
+        // convert numbers to text before writing the row
+        String articleIdText = String.valueOf(articleId);
+        String cleanedTitle = cleanText(title);
+        String yearText = String.valueOf(year);
+        String cleanedVolume = cleanText(volume);
+        String cleanedPages = cleanText(pages);
+        String journalIdText = String.valueOf(journalId);
+
         writeTsvLine(journalArticlesWriter,
-            String.valueOf(articleId),
+            articleIdText,
             cleanedOriginalId,
-            cleanText(title),
-            String.valueOf(year),
-            cleanText(volume),
-            cleanText(pages),
-            String.valueOf(journalId)
+            cleanedTitle,
+            yearText,
+            cleanedVolume,
+            cleanedPages,
+            journalIdText
         );
 
         return articleId;
     }
 
-    /**
-     * Splits the pipe-separated authors field, creates/reuses author ids, and
-     * writes article-author relation rows.
-     *
-     * The method is shared by conference and journal processing. The caller
-     * supplies the correct output writer and "seen" set for the article type.
-     */
+    // this takes the authors from one article row and writes the article-author rows
     private void writeAuthorRelations(String authorsValue, int articleId, BufferedWriter relationWriter, Set<String> seenRelations)
             throws IOException {
+        // if the article has no authors, there is nothing to write
         if (isNullLike(authorsValue)) {
             return;
         }
 
-        // The input files store multiple authors in one column separated by |.
-        String[] authors = authorsValue.split("\\|");
+        // in the input file, many authors are stored in one cell using | between them
+        String authorSeparator = "\\|";
+        String[] authors = authorsValue.split(authorSeparator);
         for (String authorName : authors) {
+            // clean each author name before using it
             String cleanedAuthorName = cleanText(authorName);
             if (isNullLike(cleanedAuthorName)) {
                 continue;
             }
 
             int authorId = getOrCreateAuthor(cleanedAuthorName);
-            String relationKey = articleId + "-" + authorId;
-            // LinkedHashSet.add() returns false when the relation has already
-            // been written, which protects the relation table from duplicates.
+            String relationSeparator = "-";
+            String relationKey = articleId + relationSeparator + authorId;
+            // if this relation is new, write it. If it already exists, skip it
             if (seenRelations.add(relationKey)) {
-                writeTsvLine(relationWriter, String.valueOf(articleId), String.valueOf(authorId));
+                String articleIdText = String.valueOf(articleId);
+                String authorIdText = String.valueOf(authorId);
+
+                writeTsvLine(relationWriter, articleIdText, authorIdText);
             }
         }
     }
 
-    /**
-     * Returns the generated id for an author, creating a new author row when the
-     * normalized name has not appeared before.
-     *
-     * The normalized key is used only for matching. The output keeps the cleaned
-     * original spelling from the first occurrence.
-     */
+    // this returns the id of an author
+    // if the author is new, we create a new id
     private int getOrCreateAuthor(String authorName) {
+        // normalize the name so duplicates are easier to find
         String normalizedAuthorName = normalizeAuthorName(authorName);
         Integer existingId = authorIdsByNormalizedName.get(normalizedAuthorName);
         if (existingId != null) {
             return existingId;
         }
 
+        // create a new author id
         int id = nextAuthorId++;
         authorIdsByNormalizedName.put(normalizedAuthorName, id);
         authorNamesById.put(id, authorName);
         return id;
     }
 
-    /**
-     * Searches for an optional conference-ranking CSV and loads the first file
-     * that exists.
-     *
-     * Only standard Java libraries are used in this ETL, so Excel files are not
-     * parsed directly. If the Excel version is found, the user is told to export
-     * it as CSV.
-     */
+    // this tries to find a conference ranking CSV file
+    // if the file exists, we load extra conference information from it
     private void loadOptionalConferenceRankings() {
+        // possible conference ranking file names
+        String icoreKilledColumnsFile = "data/raw/iCore26_KilledColumnsForLoading.csv";
+        String icoreKilledColumnsFolderFile = "data/raw/icore26_data/iCore26_KilledColumnsForLoading.csv";
+        String icoreKilledColumnsLowercaseFolderFile = "data/raw/icore26_data/icore26_KilledColumnsForLoading.csv";
+        String icoreCsvFile = "data/raw/iCore26.csv";
+        String icoreCsvFolderFile = "data/raw/icore26_data/iCore26.csv";
+        String icoreLowercaseCsvFolderFile = "data/raw/icore26_data/icore26.csv";
+        String icoreRawFile = "data/raw/iCORE_raw.csv";
+        String icoreRawFolderFile = "data/raw/icore26_data/iCORE_raw.csv";
+
         List<String> possibleFiles = Arrays.asList(
-            "data/raw/iCore26_KilledColumnsForLoading.csv",
-            "data/raw/icore26_data/iCore26_KilledColumnsForLoading.csv",
-            "data/raw/icore26_data/icore26_KilledColumnsForLoading.csv",
-            "data/raw/iCore26.csv",
-            "data/raw/icore26_data/iCore26.csv",
-            "data/raw/icore26_data/icore26.csv",
-            "data/raw/iCORE_raw.csv",
-            "data/raw/icore26_data/iCORE_raw.csv"
+            icoreKilledColumnsFile,
+            icoreKilledColumnsFolderFile,
+            icoreKilledColumnsLowercaseFolderFile,
+            icoreCsvFile,
+            icoreCsvFolderFile,
+            icoreLowercaseCsvFolderFile,
+            icoreRawFile,
+            icoreRawFolderFile
         );
 
         for (String file : possibleFiles) {
+            // skip file names that do not exist
             Path path = Paths.get(file);
             if (!Files.exists(path)) {
                 continue;
             }
 
             try {
-                // Stop after the first usable ranking file to avoid loading the
-                // same ranking source twice under different filenames.
+                // stop after the first ranking file that works
+                // so we do not load the same ranking data twice
                 int loaded = loadConferenceRankingCsv(path);
                 System.out.println("Loaded conference ranking rows from " + file + ": " + loaded);
                 return;
@@ -674,13 +665,15 @@ public class ETL {
             }
         }
 
-        List<String> excelFiles = Arrays.asList(
-            "data/raw/icoreCategories.xlsx",
-            "data/raw/icore26_data/icoreCategories.xlsx"
-        );
+        String icoreExcelFile = "data/raw/icoreCategories.xlsx";
+        String icoreExcelFolderFile = "data/raw/icore26_data/icoreCategories.xlsx";
 
+        List<String> excelFiles = Arrays.asList(icoreExcelFile, icoreExcelFolderFile);
+
+        // explain Excel files instead of trying to read them
         for (String excelFile : excelFiles) {
-            if (Files.exists(Paths.get(excelFile))) {
+            Path excelPath = Paths.get(excelFile);
+            if (Files.exists(excelPath)) {
                 System.out.println("Found " + excelFile + ", but this ETL uses only standard Java and reads CSV files. "
                     + "Export the Excel sheet as CSV if you want the conference ranking fields enriched automatically.");
                 return;
@@ -688,16 +681,9 @@ public class ETL {
         }
     }
 
-    /**
-     * Loads conference lookup rows from a ranking CSV file.
-     *
-     * The ranking file is treated as enrichment data. It can create conference
-     * rows before article processing, and article rows can later reuse those ids
-     * through acronym/title aliases.
-     *
-     * @return number of non-empty ranking rows consumed
-     */
+    // this reads the conference ranking CSV file
     private int loadConferenceRankingCsv(Path path) throws IOException {
+        // open the ranking file
         try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
             String headerLine = reader.readLine();
             if (headerLine == null) {
@@ -708,55 +694,78 @@ public class ETL {
             List<String> headers = splitDelimitedLine(headerLine, delimiter);
             Map<String, Integer> headerIndex = buildHeaderIndex(headers);
 
-            // These columns are optional because ranking CSV exports may use
-            // different subsets or slightly different names.
-            int titleIndex = optionalIndex(headerIndex, "title", "conference_title", "name");
-            int acronymIndex = optionalIndex(headerIndex, "acronym", "abbr", "abbreviation");
-            int rankIndex = optionalIndex(headerIndex, "rank", "rank_category", "ranking");
-            int primaryForIndex = optionalIndex(headerIndex, "primaryfor", "primary_for", "primary_for_code");
+            // these columns are optional because ranking files may be different
+            // so the code accepts different possible column names
+            String titleColumn = "title";
+            String conferenceTitleColumn = "conference_title";
+            String nameColumn = "name";
+            String acronymColumn = "acronym";
+            String abbrColumn = "abbr";
+            String abbreviationColumn = "abbreviation";
+            String rankColumn = "rank";
+            String rankCategoryColumn = "rank_category";
+            String rankingColumn = "ranking";
+            String primaryForColumn = "primaryfor";
+            String primaryForWithUnderscoreColumn = "primary_for";
+            String primaryForCodeColumn = "primary_for_code";
+
+            int titleIndex = optionalIndex(headerIndex, titleColumn, conferenceTitleColumn, nameColumn);
+            int acronymIndex = optionalIndex(headerIndex, acronymColumn, abbrColumn, abbreviationColumn);
+            int rankIndex = optionalIndex(headerIndex, rankColumn, rankCategoryColumn, rankingColumn);
+            int primaryForIndex = optionalIndex(headerIndex, primaryForColumn, primaryForWithUnderscoreColumn, primaryForCodeColumn);
 
             String line;
             int count = 0;
             while ((line = reader.readLine()) != null) {
+                // read the ranking row values
                 List<String> columns = splitDelimitedLine(line, delimiter);
                 String title = valueAt(columns, titleIndex);
                 String acronym = valueAt(columns, acronymIndex);
                 String rank = valueAt(columns, rankIndex);
                 String primaryFor = valueAt(columns, primaryForIndex);
 
-                if (isNullLike(title) && isNullLike(acronym)) {
-                    continue;
+                if (isNullLike(title)) {
+                    if (isNullLike(acronym)) {
+                        continue;
+                    }
                 }
 
-                // Use the acronym as the primary lookup when present, but keep
-                // the title too so article rows can match either value.
-                getOrCreateConference(acronym, isNullLike(title) ? acronym : title, rank, primaryFor);
+                // use the acronym when it exists
+                // but keep the title too so articles can match either value
+                String conferenceTitle;
+                if (isNullLike(title)) {
+                    conferenceTitle = acronym;
+                } else {
+                    conferenceTitle = title;
+                }
+
+                getOrCreateConference(acronym, conferenceTitle, rank, primaryFor);
                 count++;
             }
+            // return how many ranking rows were loaded
             return count;
         }
     }
 
-    /**
-     * Searches for an optional journal-ranking CSV and loads the first file that
-     * exists. The two supported paths cover both a flat export and a nested
-     * folder layout.
-     */
+    // this tries to find a journal ranking CSV file
+    // if the file exists, we load extra journal information from it
     private void loadOptionalJournalRankings() {
-        List<String> possibleFiles = Arrays.asList(
-            "data/raw/journal_ranking_data_raw.csv",
-            "data/raw/journal_ranking_data_raw/journal_ranking_data_raw.csv"
-        );
+        // possible journal ranking file names
+        String journalRankingFile = "data/raw/journal_ranking_data_raw.csv";
+        String journalRankingFolderFile = "data/raw/journal_ranking_data_raw/journal_ranking_data_raw.csv";
+
+        List<String> possibleFiles = Arrays.asList(journalRankingFile, journalRankingFolderFile);
 
         for (String file : possibleFiles) {
+            // skip file names that do not exist
             Path path = Paths.get(file);
             if (!Files.exists(path)) {
                 continue;
             }
 
             try {
-                // As with conferences, one ranking file is enough. Loading both
-                // could double-count equivalent journal metadata.
+                // one ranking file is enough
+                // loading two could duplicate the same journal data
                 int loaded = loadJournalRankingCsv(path);
                 System.out.println("Loaded journal ranking rows from " + file + ": " + loaded);
                 return;
@@ -766,16 +775,9 @@ public class ETL {
         }
     }
 
-    /**
-     * Loads journal lookup rows from a ranking CSV file.
-     *
-     * Numeric ranking columns are stored as strings after validation/cleaning
-     * because the ETL output is a load file. Database type enforcement happens
-     * later when the TSV files are imported.
-     *
-     * @return number of ranking rows with a usable journal title
-     */
+    // this reads the journal ranking CSV file
     private int loadJournalRankingCsv(Path path) throws IOException {
+        // open the ranking file
         try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
             String headerLine = reader.readLine();
             if (headerLine == null) {
@@ -786,70 +788,105 @@ public class ETL {
             List<String> headers = splitDelimitedLine(headerLine, delimiter);
             Map<String, Integer> headerIndex = buildHeaderIndex(headers);
 
-            // Support common column-name variants used by SJR/SCImago-style
-            // exports and project-specific cleaned files.
-            int titleIndex = optionalIndex(headerIndex, "title", "journal_title", "source_title", "journal");
-            int countryIndex = optionalIndex(headerIndex, "country");
-            int sjrIndex = optionalIndex(headerIndex, "sjrindex", "sjr_index", "sjr");
-            int bestQuartileIndex = optionalIndex(headerIndex, "bestquartile", "best_quartile", "quartile");
-            int totalDocs3yIndex = optionalIndex(headerIndex, "totaldocs3y", "total_docs_3y", "citabledocs3y", "citable_docs_3y");
-            int totalRefsIndex = optionalIndex(headerIndex, "totalrefs", "total_refs");
-            int citesPerDoc2yIndex = optionalIndex(headerIndex, "citesdoc2y", "cites_per_doc_2y", "citesperdoc2y");
+            // accept different column names that may appear in journal ranking files
+
+            String titleColumn = "title";
+            String journalTitleColumn = "journal_title";
+            String sourceTitleColumn = "source_title";
+            String journalColumn = "journal";
+            String countryColumn = "country";
+            String sjrIndexColumn = "sjrindex";
+            String sjrIndexWithUnderscoreColumn = "sjr_index";
+            String sjrColumn = "sjr";
+            String bestQuartileColumn = "bestquartile";
+            String bestQuartileWithUnderscoreColumn = "best_quartile";
+            String quartileColumn = "quartile";
+            String totalDocs3yColumn = "totaldocs3y";
+            String totalDocs3yWithUnderscoreColumn = "total_docs_3y";
+            String citableDocs3yColumn = "citabledocs3y";
+            String citableDocs3yWithUnderscoreColumn = "citable_docs_3y";
+            String totalRefsColumn = "totalrefs";
+            String totalRefsWithUnderscoreColumn = "total_refs";
+            String citesDoc2yColumn = "citesdoc2y";
+            String citesPerDoc2yWithUnderscoreColumn = "cites_per_doc_2y";
+            String citesPerDoc2yColumn = "citesperdoc2y";
+
+            int titleIndex = optionalIndex(headerIndex, titleColumn, journalTitleColumn, sourceTitleColumn, journalColumn);
+            int countryIndex = optionalIndex(headerIndex, countryColumn);
+            int sjrIndex = optionalIndex(headerIndex, sjrIndexColumn, sjrIndexWithUnderscoreColumn, sjrColumn);
+            int bestQuartileIndex = optionalIndex(headerIndex, bestQuartileColumn, bestQuartileWithUnderscoreColumn, quartileColumn);
+            int totalDocs3yIndex = optionalIndex(headerIndex, totalDocs3yColumn, totalDocs3yWithUnderscoreColumn, citableDocs3yColumn, citableDocs3yWithUnderscoreColumn);
+            int totalRefsIndex = optionalIndex(headerIndex, totalRefsColumn, totalRefsWithUnderscoreColumn);
+            int citesPerDoc2yIndex = optionalIndex(headerIndex, citesDoc2yColumn, citesPerDoc2yWithUnderscoreColumn, citesPerDoc2yColumn);
 
             String line;
             int count = 0;
             while ((line = reader.readLine()) != null) {
+                // read the ranking row values
                 List<String> columns = splitDelimitedLine(line, delimiter);
                 String title = valueAt(columns, titleIndex);
                 if (isNullLike(title)) {
                     continue;
                 }
 
+                String country = valueAt(columns, countryIndex);
+                String sjr = valueAt(columns, sjrIndex);
+                String bestQuartile = valueAt(columns, bestQuartileIndex);
+                String totalDocs3y = valueAt(columns, totalDocs3yIndex);
+                String totalRefs = valueAt(columns, totalRefsIndex);
+                String citesPerDoc2y = valueAt(columns, citesPerDoc2yIndex);
+
                 getOrCreateJournal(
                     title,
-                    valueAt(columns, countryIndex),
-                    valueAt(columns, sjrIndex),
-                    valueAt(columns, bestQuartileIndex),
-                    valueAt(columns, totalDocs3yIndex),
-                    valueAt(columns, totalRefsIndex),
-                    valueAt(columns, citesPerDoc2yIndex)
+                    country,
+                    sjr,
+                    bestQuartile,
+                    totalDocs3y,
+                    totalRefs,
+                    citesPerDoc2y
                 );
                 count++;
             }
+            // return how many ranking rows were loaded
             return count;
         }
     }
 
-    /**
-     * Writes lookup tables after all input rows have been processed.
-     *
-     * Article and relation rows are streamed during processing, but lookup rows
-     * must wait until the end so every discovered author, conference, and
-     * journal is included exactly once.
-     */
+    // this writes the final Authors, Conferences, and Journals files
     private void writeLookupTables() throws IOException {
+        // write the authors lookup table
         try (BufferedWriter writer = newUtf8Writer(AUTHORS_OUT)) {
             for (Map.Entry<Integer, String> entry : authorNamesById.entrySet()) {
-                writeTsvLine(writer, String.valueOf(entry.getKey()), entry.getValue());
+                String authorIdText = String.valueOf(entry.getKey());
+                String authorName = entry.getValue();
+
+                writeTsvLine(writer, authorIdText, authorName);
             }
         }
 
+        // write the conferences lookup table
         try (BufferedWriter writer = newUtf8Writer(CONFERENCES_OUT)) {
             for (Conference conference : conferencesById.values()) {
+                String conferenceIdText = String.valueOf(conference.id);
+                String cleanedPrimaryFor = cleanInteger(conference.primaryFor);
+
                 writeTsvLine(writer,
-                    String.valueOf(conference.id),
+                    conferenceIdText,
                     conference.acronym,
                     conference.title,
                     conference.rankCategory,
-                    cleanInteger(conference.primaryFor)
+                    cleanedPrimaryFor
                 );
             }
         }
 
+        // write the journals lookup table
         try (BufferedWriter writer = newUtf8Writer(JOURNALS_OUT)) {
             for (Journal journal : journalsById.values()) {
+                String journalIdText = String.valueOf(journal.id);
+
                 writeTsvLine(writer,
-                    String.valueOf(journal.id),
+                    journalIdText,
                     journal.title,
                     journal.country,
                     journal.sjrIndex,
@@ -862,164 +899,143 @@ public class ETL {
         }
     }
 
-    /**
-     * Registers all known lookup names for a conference id. This lets a later
-     * article row match the same conference by acronym or by full title.
-     */
+    // this stores all names that can point to the same conference
     private void addConferenceAliases(int conferenceId, String acronym, String title) {
         addAlias(conferenceIdsByAlias, acronym, conferenceId);
         addAlias(conferenceIdsByAlias, title, conferenceId);
     }
 
-    /**
-     * Registers a journal title as an alias for a generated journal id.
-     */
+    // this stores the journal title as a name for this journal id
     private void addJournalAliases(int journalId, String title) {
         addAlias(journalIdsByAlias, title, journalId);
     }
 
-    /**
-     * Adds a normalized alias to a lookup map if the alias is usable.
-     *
-     * putIfAbsent() protects the first id assigned to an alias. That keeps
-     * deterministic ids stable and avoids accidentally moving an alias from one
-     * lookup row to another later in the run.
-     */
+    // this adds one lookup name to a map
     private void addAlias(Map<String, Integer> aliases, String value, int id) {
+        // ignore empty alias values
         if (isNullLike(value)) {
             return;
         }
-        aliases.putIfAbsent(normalizeLookupKey(value), id);
+
+        // normalize the alias before saving it
+        String key = normalizeLookupKey(value);
+        if (!aliases.containsKey(key)) {
+            aliases.put(key, id);
+        }
     }
 
-    /**
-     * Performs a conservative fuzzy match for journal titles.
-     *
-     * Very short titles are ignored because containment matching would be too
-     * risky. Longer titles can match when either normalized title contains the
-     * other, which helps connect ranking names and DBLP names that differ by a
-     * subtitle or minor suffix.
-     */
+    // this tries to find a journal with a very similar title
     private Integer findSimilarJournalId(String journalTitle) {
+        // normalize the requested journal title
         String requested = normalizeLookupKey(journalTitle);
         if (requested.length() < 8) {
             return null;
         }
 
+        // compare the requested title with existing journal aliases
         for (Map.Entry<String, Integer> entry : journalIdsByAlias.entrySet()) {
             String existing = entry.getKey();
             if (existing.length() < 8) {
                 continue;
             }
-            if (existing.contains(requested) || requested.contains(existing)) {
+            if (existing.contains(requested)) {
+                return entry.getValue();
+            }
+            if (requested.contains(existing)) {
                 return entry.getValue();
             }
         }
         return null;
     }
 
-    /**
-     * Writes the header row for the rejected-row audit file.
-     */
-    private void writeRejectedHeader() throws IOException {
-        writeTsvLine(rejectedRowsWriter, "source_file", "line_number", "reason", "raw_row");
-    }
-
-    /**
-     * Records a source row that could not be safely loaded.
-     *
-     * The raw line is preserved so the data issue can be inspected or corrected
-     * without needing to cross-reference the original input file manually.
-     */
-    private void reject(String sourceFile, int lineNumber, String reason, String rawLine) throws IOException {
-        writeTsvLine(rejectedRowsWriter, sourceFile, String.valueOf(lineNumber), reason, rawLine);
-    }
-
-    /**
-     * Opens a UTF-8 writer for an output file and creates parent folders when needed.
-     */
+    // this opens a file for writing and creates the folder if needed
     private static BufferedWriter newUtf8Writer(String outputFile) throws IOException {
+        // create the parent folder before opening the file
         Path outputPath = Paths.get(outputFile);
+        Path outputFolder = outputPath.getParent();
 
-        if (outputPath.getParent() != null) {
-            Files.createDirectories(outputPath.getParent());
+        if (outputFolder != null) {
+            Files.createDirectories(outputFolder);
         }
 
         return Files.newBufferedWriter(outputPath, StandardCharsets.UTF_8);
     }
 
-    /**
-     * Writes one tab-separated output row.
-     *
-     * Every field goes through toTsvField() so null-like values, embedded tabs,
-     * line breaks, and repeated whitespace are handled consistently across all
-     * generated load files.
-     */
+    // this writes one line with tabs between the values
     private static void writeTsvLine(BufferedWriter writer, String... values) throws IOException {
+        char tabCharacter = '\t';
+
+        // write each value with a tab between values
         for (int i = 0; i < values.length; i++) {
             if (i > 0) {
-                writer.write('\t');
+                writer.write(tabCharacter);
             }
-            writer.write(toTsvField(values[i]));
+            String originalValue = values[i];
+            String safeValue = toTsvField(originalValue);
+            writer.write(safeValue);
         }
+        // finish the row
         writer.newLine();
     }
 
-    /**
-     * Converts a Java value into a safe TSV field.
-     *
-     * Database nulls are represented as \N. Other values are kept unquoted but
-     * normalized to one physical line so bulk loading does not split records.
-     */
+    // this makes one value safe for a TSV file
     private static String toTsvField(String value) {
+        // database null is written as \N
         if (isNullLike(value)) {
-            return "\\N";
+            String databaseNullValue = "\\N";
+            return databaseNullValue;
         }
-        return value
-            .replace('\t', ' ')
-            .replace('\r', ' ')
-            .replace('\n', ' ')
-            .replaceAll("\\s+", " ")
-            .trim();
+        char tabCharacter = '\t';
+        char carriageReturnCharacter = '\r';
+        char newLineCharacter = '\n';
+        char spaceCharacter = ' ';
+        String spaceText = " ";
+
+        String noTabs = value.replace(tabCharacter, spaceCharacter);
+        String noCarriageReturns = noTabs.replace(carriageReturnCharacter, spaceCharacter);
+        String noNewLines = noCarriageReturns.replace(newLineCharacter, spaceCharacter);
+        String manySpacesPattern = "\\s+";
+
+        // collapse repeated spaces into one space
+        String singleSpaces = noNewLines.replaceAll(manySpacesPattern, spaceText);
+        String trimmed = singleSpaces.trim();
+
+        return trimmed;
     }
 
-    /**
-     * Builds a map from normalized header name to column position.
-     *
-     * Normalization removes case and punctuation differences so headers such as
-     * "Original DBLP ID", "original_dblp_id", and "original-dblp-id" can be
-     * matched by the same candidate string.
-     */
+    // this creates a map so we can find columns by their header names
     private static Map<String, Integer> buildHeaderIndex(List<String> headers) {
         Map<String, Integer> index = new HashMap<>();
+
+        // save each header name with its column position
         for (int i = 0; i < headers.size(); i++) {
-            index.put(normalizeHeader(headers.get(i)), i);
+            String header = headers.get(i);
+            String normalizedHeader = normalizeHeader(header);
+            index.put(normalizedHeader, i);
         }
         return index;
     }
 
-    /**
-     * Finds a required column index or throws an explanatory error.
-     */
+    // this finds a required column. If it is missing, the program stops with an error
     private static int requiredIndex(Map<String, Integer> headerIndex, String fileName, String... candidates) {
+        // first try to find it like an optional column
         int index = optionalIndex(headerIndex, candidates);
         if (index < 0) {
-            throw new IllegalArgumentException(
-                "Missing required column in " + fileName + ": one of " + Arrays.toString(candidates)
-            );
+            // stop the program if a required column is missing
+            String candidateNames = Arrays.toString(candidates);
+            String errorMessage = "Missing required column in " + fileName + ": one of " + candidateNames;
+
+            throw new IllegalArgumentException(errorMessage);
         }
         return index;
     }
 
-    /**
-     * Finds the first available candidate column name.
-     *
-     * @return the zero-based column index, or -1 when none of the candidates is
-     *         present
-     */
+    // this finds an optional column. If it does not exist, it returns -1
     private static int optionalIndex(Map<String, Integer> headerIndex, String... candidates) {
+        // try each possible column name
         for (String candidate : candidates) {
-            Integer index = headerIndex.get(normalizeHeader(candidate));
+            String normalizedCandidate = normalizeHeader(candidate);
+            Integer index = headerIndex.get(normalizedCandidate);
             if (index != null) {
                 return index;
             }
@@ -1027,32 +1043,36 @@ public class ETL {
         return -1;
     }
 
-    /**
-     * Safely reads a column value from a parsed row.
-     *
-     * Missing optional columns and short rows return null, which later becomes a
-     * database null in output or is handled by validation.
-     */
+    // this safely gets one value from a row
     private static String valueAt(List<String> values, int index) {
-        if (index < 0 || index >= values.size()) {
+        // missing optional columns use -1
+        if (index < 0) {
             return null;
         }
-        return cleanText(values.get(index));
+        // short rows may not have every column
+        if (index >= values.size()) {
+            return null;
+        }
+
+        // clean the value before returning it
+        String value = values.get(index);
+        String cleanedValue = cleanText(value);
+
+        return cleanedValue;
     }
 
-    /**
-     * Guesses the delimiter used by a CSV/TSV header.
-     *
-     * The delimiter with the highest count outside quoted text wins. Semicolon
-     * is the default tie-breaker because many European spreadsheet exports use
-     * semicolon-separated CSV.
-     */
+    // this guesses if the file uses comma, semicolon, or tab
     private static char detectDelimiter(String headerLine) {
-        char[] candidates = new char[] {';', ',', '\t'};
-        char best = ';';
+        // test the common delimiters
+        char semicolon = ';';
+        char comma = ',';
+        char tab = '\t';
+        char[] candidates = new char[] {semicolon, comma, tab};
+        char best = semicolon;
         int bestCount = -1;
 
         for (char candidate : candidates) {
+            // count delimiters that are not inside quotes
             int count = countDelimiterOutsideQuotes(headerLine, candidate);
             if (count > bestCount) {
                 best = candidate;
@@ -1062,226 +1082,290 @@ public class ETL {
         return best;
     }
 
-    /**
-     * Counts delimiter occurrences while ignoring delimiters inside quoted
-     * fields. Escaped double quotes inside quoted fields are skipped.
-     */
+    // this counts delimiters, but ignores delimiters inside quotes
     private static int countDelimiterOutsideQuotes(String line, char delimiter) {
         boolean inQuotes = false;
         int count = 0;
+        char quoteCharacter = '"';
+
         for (int i = 0; i < line.length(); i++) {
+            // check the current character
             char c = line.charAt(i);
-            if (c == '"') {
-                if (inQuotes && i + 1 < line.length() && line.charAt(i + 1) == '"') {
+            boolean currentCharacterIsQuote = c == quoteCharacter;
+            boolean hasNextCharacter = i + 1 < line.length();
+            boolean nextCharacterIsQuote = hasNextCharacter && line.charAt(i + 1) == quoteCharacter;
+            boolean foundEscapedQuote = inQuotes && nextCharacterIsQuote;
+            boolean foundDelimiterOutsideQuotes = c == delimiter && !inQuotes;
+
+            if (currentCharacterIsQuote) {
+                if (foundEscapedQuote) {
+                    // two quotes inside quotes mean one real quote
                     i++;
                 } else {
+                    // entering or leaving a quoted value
                     inQuotes = !inQuotes;
                 }
-            } else if (c == delimiter && !inQuotes) {
+            } else if (foundDelimiterOutsideQuotes) {
+                // count only real separators
                 count++;
             }
         }
         return count;
     }
 
-    /**
-     * Splits one delimited line using a small CSV parser.
-     *
-     * The parser supports quoted fields and doubled quotes, which is enough for
-     * the project CSV files without adding an external dependency.
-     */
+    // this splits one CSV/TSV line into columns
     private static List<String> splitDelimitedLine(String line, char delimiter) {
         List<String> result = new ArrayList<>();
         StringBuilder current = new StringBuilder();
         boolean inQuotes = false;
+        char quoteCharacter = '"';
+        int emptyLength = 0;
 
         for (int i = 0; i < line.length(); i++) {
+            // check the current character
             char c = line.charAt(i);
-            if (c == '"') {
-                if (inQuotes && i + 1 < line.length() && line.charAt(i + 1) == '"') {
-                    current.append('"');
+            boolean currentCharacterIsQuote = c == quoteCharacter;
+            boolean hasNextCharacter = i + 1 < line.length();
+            boolean nextCharacterIsQuote = hasNextCharacter && line.charAt(i + 1) == quoteCharacter;
+            boolean foundEscapedQuote = inQuotes && nextCharacterIsQuote;
+            boolean foundDelimiterOutsideQuotes = c == delimiter && !inQuotes;
+
+            if (currentCharacterIsQuote) {
+                if (foundEscapedQuote) {
+                    // two quotes inside quotes mean one real quote
+                    current.append(quoteCharacter);
                     i++;
                 } else {
+                    // entering or leaving a quoted value
                     inQuotes = !inQuotes;
                 }
-            } else if (c == delimiter && !inQuotes) {
+            } else if (foundDelimiterOutsideQuotes) {
+                // finish the current column
                 result.add(current.toString());
-                current.setLength(0);
+                current.setLength(emptyLength);
             } else {
+                // keep building the current column
                 current.append(c);
             }
         }
+        // add the final column after the loop ends
         result.add(current.toString());
         return result;
     }
 
-    /**
-     * Normalizes a header so candidate names can be compared robustly.
-     *
-     * The byte order mark is removed because UTF-8 CSV files exported from
-     * spreadsheets sometimes include it at the beginning of the first header.
-     */
+    // this makes header names easier to compare
     private static String normalizeHeader(String value) {
+        // missing header names become empty text
         if (value == null) {
-            return "";
+            String emptyText = "";
+            return emptyText;
         }
-        return value
-            .replace("\uFEFF", "")
-            .toLowerCase(Locale.ROOT)
-            .replaceAll("[^a-z0-9]", "");
+
+        // remove BOM, lowercase, and remove punctuation
+        String byteOrderMark = "\uFEFF";
+        String emptyText = "";
+        String withoutBom = value.replace(byteOrderMark, emptyText);
+        String lowerCase = withoutBom.toLowerCase(Locale.ROOT);
+        String notALetterOrNumberPattern = "[^a-z0-9]";
+        String lettersAndNumbersOnly = lowerCase.replaceAll(notALetterOrNumberPattern, emptyText);
+
+        return lettersAndNumbersOnly;
     }
 
-    /**
-     * Cleans ordinary text fields by removing a possible byte order mark,
-     * trimming outer whitespace, and collapsing repeated whitespace.
-     *
-     * Null-like values are returned as null so all later checks can use the same
-     * isNullLike() logic.
-     */
+    // this cleans normal text values
     private static String cleanText(String value) {
+        // null stays null
         if (value == null) {
             return null;
         }
-        String cleaned = value
-            .replace("\uFEFF", "")
-            .trim()
-            .replaceAll("\\s+", " ");
-        return isNullLike(cleaned) ? null : cleaned;
+
+        // remove BOM and extra whitespace
+        String byteOrderMark = "\uFEFF";
+        String emptyText = "";
+        String spaceText = " ";
+        String withoutBom = value.replace(byteOrderMark, emptyText);
+        String trimmed = withoutBom.trim();
+        String manySpacesPattern = "\\s+";
+        String cleaned = trimmed.replaceAll(manySpacesPattern, spaceText);
+
+        // convert empty-looking values to null
+        if (isNullLike(cleaned)) {
+            return null;
+        }
+
+        return cleaned;
     }
 
-    /**
-     * Defines the set of source values that should be treated as missing data.
-     */
+    // this checks if a value should be treated like missing data
     private static boolean isNullLike(String value) {
+        // Java null is missing data
         if (value == null) {
             return true;
         }
+
+        // compare common missing-value spellings
         String trimmed = value.trim();
-        return trimmed.isEmpty()
-            || trimmed.equalsIgnoreCase("NULL")
-            || trimmed.equalsIgnoreCase("N/A")
-            || trimmed.equalsIgnoreCase("NA")
-            || trimmed.equals("\\N")
-            || trimmed.equals("-");
+        boolean emptyText = trimmed.isEmpty();
+        String nullWord = "NULL";
+        String notAvailableWord = "N/A";
+        String shortNotAvailableWord = "NA";
+        String databaseNullValue = "\\N";
+        String dashValue = "-";
+
+        boolean nullText = trimmed.equalsIgnoreCase(nullWord);
+        boolean notAvailableText = trimmed.equalsIgnoreCase(notAvailableWord);
+        boolean shortNotAvailableText = trimmed.equalsIgnoreCase(shortNotAvailableWord);
+        boolean databaseNullText = trimmed.equals(databaseNullValue);
+        boolean dashText = trimmed.equals(dashValue);
+
+        // if any missing-value check is true, the value is missing
+        return emptyText
+            || nullText
+            || notAvailableText
+            || shortNotAvailableText
+            || databaseNullText
+            || dashText;
     }
 
-    /**
-     * Returns a printable string for messages where null would be confusing.
-     */
-    private static String safe(String value) {
-        return value == null ? "" : value;
-    }
-
-    /**
-     * Parses a publication year from a source value.
-     *
-     * Exact four-digit years are accepted directly. Values that contain a
-     * four-digit year inside extra text are also accepted, which handles simple
-     * dirty exports without rejecting otherwise usable rows.
-     */
+    // this tries to get a 4-digit year from a value
     private static Integer parseYear(String value) {
+        // missing year cannot be parsed
         if (isNullLike(value)) {
             return null;
         }
+
+        // accept a clean four digit year
         String trimmed = value.trim();
-        if (trimmed.matches("\\d{4}")) {
+        String fourDigitYearPattern = "\\d{4}";
+        if (trimmed.matches(fourDigitYearPattern)) {
             return Integer.valueOf(trimmed);
         }
-        String digits = trimmed.replaceAll(".*?(\\d{4}).*", "$1");
-        if (digits.matches("\\d{4}")) {
-            return Integer.valueOf(digits);
+
+        // otherwise try to find a four digit year inside the text
+        String firstFourDigitYearPattern = ".*?(\\d{4}).*";
+        String firstMatchReplacement = "$1";
+        String firstYearFound = trimmed.replaceAll(firstFourDigitYearPattern, firstMatchReplacement);
+        if (firstYearFound.matches(fourDigitYearPattern)) {
+            return Integer.valueOf(firstYearFound);
         }
         return null;
     }
 
-    /**
-     * Cleans an integer field for database loading.
-     *
-     * Thousands separators are removed. Decimal values that are mathematically
-     * integers, such as "42.0", are converted to "42".
-     */
+    // this cleans a value that should be an integer
     private static String cleanInteger(String value) {
+        // missing values stay null
         if (isNullLike(value)) {
             return null;
         }
-        String trimmed = value.trim().replace(",", "");
-        if (trimmed.matches("-?\\d+")) {
+
+        // remove commas before checking the number
+        String commaText = ",";
+        String emptyText = "";
+        String trimmed = value.trim().replace(commaText, emptyText);
+        String integerPattern = "-?\\d+";
+        String decimalEndingInZeroPattern = "-?\\d+\\.0+";
+
+        if (trimmed.matches(integerPattern)) {
             return trimmed;
         }
-        if (trimmed.matches("-?\\d+\\.0+")) {
-            return trimmed.substring(0, trimmed.indexOf('.'));
+
+        // convert values like 10.0 into 10
+        if (trimmed.matches(decimalEndingInZeroPattern)) {
+            char decimalPointCharacter = '.';
+            int decimalPointIndex = trimmed.indexOf(decimalPointCharacter);
+            int startOfNumber = 0;
+            String numberBeforeDecimalPoint = trimmed.substring(startOfNumber, decimalPointIndex);
+
+            return numberBeforeDecimalPoint;
         }
         return null;
     }
 
-    /**
-     * Cleans a decimal field for database loading.
-     *
-     * Commas are converted to decimal points so European-style decimal values
-     * can be loaded into numeric database columns.
-     */
+    // this cleans a value that should be a decimal number
     private static String cleanDecimal(String value) {
+        // missing values stay null
         if (isNullLike(value)) {
             return null;
         }
-        String trimmed = value.trim().replace(",", ".");
-        if (trimmed.matches("-?\\d+(\\.\\d+)?")) {
+
+        // change comma decimals into dot decimals
+        String commaText = ",";
+        String decimalPointText = ".";
+        String trimmed = value.trim().replace(commaText, decimalPointText);
+        String decimalPattern = "-?\\d+(\\.\\d+)?";
+
+        if (trimmed.matches(decimalPattern)) {
             return trimmed;
         }
         return null;
     }
 
-    /**
-     * Produces a normalized key for conference and journal matching.
-     *
-     * This starts with author-style normalization for case/accent handling, then
-     * removes punctuation and common venue words that usually do not distinguish
-     * one conference or journal from another.
-     */
+    // this creates a simple key for matching conferences and journals
     private static String normalizeLookupKey(String value) {
+        // missing values use an empty key
         if (isNullLike(value)) {
-            return "";
+            String emptyText = "";
+            return emptyText;
         }
+
+        // start with the same cleaning used for author names
         String normalized = normalizeAuthorName(value);
-        normalized = normalized.replace("&", "and");
-        normalized = normalized.replaceAll("[^a-z0-9]+", " ");
-        normalized = normalized.replaceAll("\\b(the|of|and|for|on|in|journal|transactions|proceedings|conference|international)\\b", " ");
-        normalized = normalized.replaceAll("\\s+", " ").trim();
+        String nonLetterOrNumberPattern = "[^a-z0-9]+";
+        String wordsToIgnorePattern = "\\b(the|of|and|for|on|in|journal|transactions|proceedings|conference|international)\\b";
+        String manySpacesPattern = "\\s+";
+        String ampersandText = "&";
+        String andText = "and";
+        String spaceText = " ";
+
+        // remove punctuation and common venue words
+        normalized = normalized.replace(ampersandText, andText);
+        normalized = normalized.replaceAll(nonLetterOrNumberPattern, spaceText);
+        normalized = normalized.replaceAll(wordsToIgnorePattern, spaceText);
+        normalized = normalized.replaceAll(manySpacesPattern, spaceText).trim();
         return normalized;
     }
 
-    /**
-     * Normalizes author names for de-duplication.
-     *
-     * The method lowercases, fixes a few common encoding artifacts, removes
-     * diacritics, and collapses whitespace. The original cleaned spelling is
-     * still preserved for output.
-     */
+    // this creates a simple version of an author name for duplicate checking
     private static String normalizeAuthorName(String name) {
+        // compare names in lowercase
         String normalized = name.toLowerCase(Locale.ROOT);
 
-        // Replace common non-ASCII characters with ASCII equivalents before
-        // removing diacritics, which makes name matching more consistent.
-        normalized = normalized.replace("ß", "ss");
-        normalized = normalized.replace("æ", "ae");
-        normalized = normalized.replace("œ", "oe");
-        normalized = normalized.replace("ø", "o");
-        normalized = normalized.replace("đ", "d");
-        normalized = normalized.replace("ł", "l");
+        // replace some special letters with simpler English letters first
+        String sharpS = "ß";
+        String sharpSReplacement = "ss";
+        String aeLetter = "æ";
+        String aeReplacement = "ae";
+        String oeLetter = "œ";
+        String oeReplacement = "oe";
+        String oSlashLetter = "ø";
+        String oSlashReplacement = "o";
+        String dStrokeLetter = "đ";
+        String dStrokeReplacement = "d";
+        String lStrokeLetter = "ł";
+        String lStrokeReplacement = "l";
 
+        normalized = normalized.replace(sharpS, sharpSReplacement);
+        normalized = normalized.replace(aeLetter, aeReplacement);
+        normalized = normalized.replace(oeLetter, oeReplacement);
+        normalized = normalized.replace(oSlashLetter, oSlashReplacement);
+        normalized = normalized.replace(dStrokeLetter, dStrokeReplacement);
+        normalized = normalized.replace(lStrokeLetter, lStrokeReplacement);
+
+        // split accented letters into base letter + accent mark
         normalized = Normalizer.normalize(normalized, Normalizer.Form.NFD);
-        normalized = normalized.replaceAll("\\p{M}", "");
-        normalized = normalized.replaceAll("\\s+", " ");
+        String accentMarkPattern = "\\p{M}";
+        String manySpacesPattern = "\\s+";
+        String emptyText = "";
+        String spaceText = " ";
+
+        // remove accents and extra spaces
+        normalized = normalized.replaceAll(accentMarkPattern, emptyText);
+        normalized = normalized.replaceAll(manySpacesPattern, spaceText);
 
         return normalized.trim();
     }
 
-    /**
-     * In-memory representation of a conference lookup row.
-     *
-     * Ranking fields are mutable because a conference may be created from an
-     * article row first and enriched later by ranking data, or vice versa.
-     */
+    // small class used only to keep conference data while the program runs
     private static final class Conference {
         private final int id;
         private final String acronym;
@@ -1290,21 +1374,24 @@ public class ETL {
         private String primaryFor;
 
         private Conference(int id, String acronym, String title, String rankCategory, String primaryFor) {
+            // save the conference fields
             this.id = id;
             this.acronym = acronym;
-            this.title = isNullLike(title) ? acronym : title;
+
+            // use acronym as the title if no title exists
+            String finalTitle;
+            if (isNullLike(title)) {
+                finalTitle = acronym;
+            } else {
+                finalTitle = title;
+            }
+            this.title = finalTitle;
             this.rankCategory = rankCategory;
             this.primaryFor = primaryFor;
         }
     }
 
-    /**
-     * In-memory representation of a journal lookup row.
-     *
-     * Ranking/enrichment fields are mutable for the same reason as Conference:
-     * the best metadata for a journal can arrive from a different source row
-     * than the one that first creates the lookup record.
-     */
+    // small class used only to keep journal data while the program runs
     private static final class Journal {
         private final int id;
         private final String title;
@@ -1317,6 +1404,7 @@ public class ETL {
 
         private Journal(int id, String title, String country, String sjrIndex, String bestQuartile,
                         String totalDocs3y, String totalRefs, String citesPerDoc2y) {
+            // save the journal fields
             this.id = id;
             this.title = title;
             this.country = country;
