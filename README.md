@@ -246,14 +246,17 @@ Bibliometric_Analytics_System/
 │   │   ├── conference_ranking.csv
 │   │   └── journal_ranking_data_raw.csv
 │   │
-│   └── processed/
-│       ├── Authors_Clean.csv
-│       ├── Conferences_Clean.csv
-│       ├── Journals_Clean.csv
-│       ├── Conference_Articles_Clean.csv
-│       ├── Journal_Articles_Clean.csv
-│       ├── Conference_Article_Authors_Clean.csv
-│       └── Journal_Article_Authors_Clean.csv
+│   ├── processed/
+│   │   ├── Authors_Clean.csv
+│   │   ├── Conferences_Clean.csv
+│   │   ├── Journals_Clean.csv
+│   │   ├── Conference_Articles_Clean.csv
+│   │   ├── Journal_Articles_Clean.csv
+│   │   ├── Conference_Article_Authors_Clean.csv
+│   │   └── Journal_Article_Authors_Clean.csv
+│   │
+│   └── rejected/
+│       └── Rejected_Rows.csv
 │
 ├── sql/
 │   ├── schema.sql
@@ -263,7 +266,6 @@ Bibliometric_Analytics_System/
 │   └── mysql-connector-j.jar
 │
 └── README.md
-```
 
 ## Requirements
 
